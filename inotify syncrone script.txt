@@ -1,0 +1,115 @@
+#!/bin/bash
+
+# Configuration
+WATCH_DIR_RAW="/mnt/nextcloud_data" # Ce que inotifywait surveille
+NEXTCLOUD_PATH="/var/www/nextcloud"  # Chemin d'installation de Nextcloud
+NEXTCLOUD_USER="www-data"            # Utilisateur sous lequel tourne Apache/PHP-FPM
+
+# Assurer que WATCH_DIR_RAW n'a pas de slash final pour la cohérence
+WATCH_DIR="${WATCH_DIR_RAW%/}"
+
+# Fichiers et répertoires système globaux de Nextcloud (directement sous la racine des données)
+# à ignorer si USER_DIR correspond à l'un d'eux.
+# Ces noms sont typiquement trouvés à la racine du répertoire de données Nextcloud.
+NEXTCLOUD_GLOBAL_SYSTEM_DIRS_PATTERN='^(appdata_[a-z0-9]+|\.ocdata|nextcloud\.log|updater-[a-z0-9]+|index\.html|data|\.well-known|htaccesstest\.txt|robots\.txt|AUTHORS|COPYING.*|public\.php|remote\.php|cron\.php|status\.php|ocs.*|updater\/index\.php)$'
+
+# Fichiers et répertoires système internes à un utilisateur Nextcloud (sous USER_DIR/files/)
+# que nous voulons ignorer lors du scan.
+# Ces noms sont typiquement trouvés à la racine du dossier 'files' d'un utilisateur ou comme sous-dossiers spéciaux.
+NEXTCLOUD_USER_INTERNAL_PATHS_PATTERN='^(\.fseventsd|\.Spotlight-V100|\.TemporaryItems|\.Trashes|files_trashbin|files_versions|uploads|cache|\.AppleDouble|\.DS_Store|Thumbs\.db|desktop\.ini|.*\.(part|crdownload))$'
+
+# Fonction pour scanner un chemin pour un utilisateur donné
+# user_id: Le nom du répertoire utilisateur (ex: "jean")
+# path_inside_user_files: Le chemin relatif à l'intérieur du dossier "files" de l'utilisateur (ex: "Photos/image.jpg")
+run_occ_scan() {
+    local user_id="$1"
+    local path_inside_user_files="$2"
+    local occ_scan_target
+
+    # Construire l'argument pour --path : "USER_ID/files/CHEMIN_RELATIF"
+    # Si path_inside_user_files est vide, on scanne la racine "files" de l'utilisateur
+    if [[ -z "$path_inside_user_files" ]]; then
+        occ_scan_target="$user_id/files"
+    else
+        # S'assurer que path_inside_user_files n'a pas de slash initial
+        path_inside_user_files="${path_inside_user_files#/}"
+        occ_scan_target="$user_id/files/$path_inside_user_files"
+    fi
+
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] OCC Scan: User: '$user_id', Target: '$occ_scan_target'"
+    sudo -u "$NEXTCLOUD_USER" php "$NEXTCLOUD_PATH/occ" files:scan --path="$occ_scan_target" --quiet
+    local scan_status=$?
+    if [ $scan_status -ne 0 ]; then
+        echo "[$(date +"%Y-%m-%d %H:%M:%S")] ERROR: OCC Scan failed for User: '$user_id', Target: '$occ_scan_target' (Exit code: $scan_status)"
+    fi
+}
+
+echo "[$(date +"%Y-%m-%d %H:%M:%S")] Starting Nextcloud real-time sync script for $WATCH_DIR"
+echo "[$(date +"%Y-%m-%d %H:%M:%S")] Using OCC command at $NEXTCLOUD_PATH/occ as user $NEXTCLOUD_USER"
+
+# Optionnel: Scan initial complet au démarrage (peut être long)
+# echo "[$(date +"%Y-%m-%d %H:%M:%S")] Performing initial scan for all users..."
+# sudo -u "$NEXTCLOUD_USER" php "$NEXTCLOUD_PATH/occ" files:scan --all --quiet
+# echo "[$(date +"%Y-%m-%d %H:%M:%S")] Initial scan complete."
+
+inotifywait -m -r -q \
+  -e create -e delete -e modify -e move \
+  --format '%w%f' \
+  "$WATCH_DIR" | \
+while IFS= read -r FULL_PATH_EVENT
+do
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] Event detected: '$FULL_PATH_EVENT'"
+
+    # Chemin relatif par rapport à WATCH_DIR
+    REL_PATH="${FULL_PATH_EVENT#$WATCH_DIR}"
+    REL_PATH="${REL_PATH#/}" # Enlève le slash initial s'il existe
+
+    # Le premier composant est le nom du répertoire utilisateur potentiel
+    USER_DIR=$(echo "$REL_PATH" | cut -d'/' -f1)
+
+    # Le reste du chemin après le répertoire utilisateur
+    # C'est le chemin qui sera relatif au dossier "files" de l'utilisateur dans Nextcloud
+    PATH_AFTER_USER_DIR=$(echo "$REL_PATH" | cut -d'/' -f2-)
+    # Si cut renvoie la chaîne entière (pas de / après USER_DIR), PATH_AFTER_USER_DIR sera égal à USER_DIR.
+    # Dans ce cas, cela signifie que l'événement concerne le USER_DIR lui-même.
+    # Nous voulons que PATH_AFTER_USER_DIR soit vide si l'événement est sur USER_DIR.
+    if [[ "$PATH_AFTER_USER_DIR" == "$USER_DIR" ]]; then
+        # Cas où l'événement est sur le USER_DIR lui-même (ex: /mnt/nextcloud_data/jean)
+        # Ou si REL_PATH est juste USER_DIR (pas de sous-chemin)
+        if [[ "$REL_PATH" == "$USER_DIR" ]]; then
+            PATH_AFTER_USER_DIR=""
+        fi
+    fi
+
+
+    # 1. Filtrer les répertoires système globaux de Nextcloud (si $USER_DIR en est un)
+    if echo "$USER_DIR" | grep -qE "$NEXTCLOUD_GLOBAL_SYSTEM_DIRS_PATTERN"; then
+        echo "[$(date +"%Y-%m-%d %H:%M:%S")] Ignoring global system directory/file change: '$USER_DIR' from event '$FULL_PATH_EVENT'"
+        continue
+    fi
+
+    # 2. Vérifier si USER_DIR est un nom de répertoire valide et non vide
+    if [[ -z "$USER_DIR" ]] || [[ ! -d "$WATCH_DIR/$USER_DIR" ]]; then
+        echo "[$(date +"%Y-%m-%d %H:%M:%S")] Ignoring event: USER_DIR ('$USER_DIR') is empty or not a directory under '$WATCH_DIR'. Full path: '$FULL_PATH_EVENT'"
+        continue
+    fi
+
+    # 3. Filtrer les chemins internes à l'utilisateur Nextcloud
+    # On regarde le premier composant de PATH_AFTER_USER_DIR
+    # ou le nom du fichier/dossier lui-même si PATH_AFTER_USER_DIR est vide (événement sur USER_DIR)
+    PATH_TO_CHECK_FOR_INTERNAL_FILTER="$PATH_AFTER_USER_DIR"
+    FILENAME_EVENT=$(basename "$FULL_PATH_EVENT") # Nom du fichier/dossier de l'événement
+
+    # On vérifie si le nom du fichier/dossier de l'événement lui-même,
+    # ou le premier segment du chemin DANS le dossier utilisateur, correspond à un motif à ignorer.
+    if echo "$FILENAME_EVENT" | grep -qE "$NEXTCLOUD_USER_INTERNAL_PATHS_PATTERN" || \
+       echo "$PATH_AFTER_USER_DIR" | grep -qE "^($(echo $NEXTCLOUD_USER_INTERNAL_PATHS_PATTERN | sed 's/\^//g; s/\$//g; s/\|/\|/g'))(/|$)" ; then
+        echo "[$(date +"%Y-%m-%d %H:%M:%S")] Ignoring user-internal path change: User: '$USER_DIR', Path: '$PATH_AFTER_USER_DIR' from event '$FULL_PATH_EVENT'"
+        continue
+    fi
+
+    # Si on arrive ici, le chemin est considéré comme valide et non-système.
+    # On passe USER_DIR et PATH_AFTER_USER_DIR à la fonction de scan.
+    run_occ_scan "$USER_DIR" "$PATH_AFTER_USER_DIR"
+
+done

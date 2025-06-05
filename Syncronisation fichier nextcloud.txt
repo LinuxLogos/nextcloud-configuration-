@@ -1,0 +1,178 @@
+Guide Complet : Surveillance Automatique des Fichiers avec inotify-tools pour Nextcloud
+Objectif
+Configurer un système qui surveille en temps réel le répertoire /mnt/nextcloud_data et synchronise automatiquement tout changement (création, modification, suppression) avec Nextcloud, même pour les actions effectuées en dehors de l'interface Nextcloud.
+
+Prérequis
+Serveur Ubuntu 24.04 LTS
+
+Nextcloud installé avec le stockage sur /mnt/nextcloud_data
+
+Accès root ou sudo
+
+Étape 1: Installation des dépendances
+bash
+sudo apt update
+sudo apt install -y inotify-tools php-cli jq
+Étape 2: Configuration des permissions
+Assurez-vous que le script pourra accéder aux fichiers Nextcloud :
+
+bash
+sudo usermod -a -G www-data $(whoami)
+sudo chmod g+rwx /mnt/nextcloud_data
+sudo chmod -R g+rw /mnt/nextcloud_data/*
+sudo find /mnt/nextcloud_data -type d -exec chmod g+rwx {} \;
+Étape 3: Création du script de surveillance
+Créez un nouveau fichier script :
+
+bash
+sudo nano /usr/local/bin/nextcloud_inotify.sh
+Collez ce contenu (adaptez les chemins) :
+
+bash
+#!/bin/bash
+
+# Chemin vers le répertoire Nextcloud
+WATCH_DIR="/mnt/nextcloud_data"
+OCC_CMD="/var/www/nextcloud/occ"
+NEXTCLOUD_USER="www-data"
+
+# Fonction pour scanner un fichier/dossier
+scan_path() {
+    local path="$1"
+    sudo -u $NEXTCLOUD_USER php $OCC_CMD files:scan --path="$path" --quiet
+}
+
+# Surveillance en temps réel
+inotifywait -m -r -e create,delete,modify,move --format '%w%f' "$WATCH_DIR" | while read FILE
+do
+    # Récupère le chemin relatif par rapport au dossier Nextcloud
+    REL_PATH=${FILE#$WATCH_DIR}
+    REL_PATH=${REL_PATH#/}
+    
+    # Trouve le propriétaire du fichier (premier niveau = nom d'utilisateur)
+    USER_DIR=$(echo "$REL_PATH" | cut -d'/' -f1)
+    
+    # Vérifie si c'est un dossier utilisateur valide
+    if [ -d "$WATCH_DIR/$USER_DIR" ] && [ "$USER_DIR" != "" ]; then
+        # Scan seulement le chemin affecté
+        echo "[$(date)] Changement détecté: $REL_PATH"
+        scan_path "$USER_DIR/files/${REL_PATH#$USER_DIR/}"
+    fi
+done
+Rendez le script exécutable :
+
+bash
+sudo chmod +x /usr/local/bin/nextcloud_inotify.sh
+Étape 4: Création du service systemd
+Créez un fichier de service :
+
+bash
+sudo nano /etc/systemd/system/nextcloud-inotify.service
+Avec ce contenu :
+
+[Unit]
+Description=Nextcloud inotify auto-scan service
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/nextcloud_inotify.sh
+Restart=always
+RestartSec=5
+User=root
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target
+Activez et démarrez le service :
+
+bash
+sudo systemctl daemon-reload
+sudo systemctl enable nextcloud-inotify.service
+sudo systemctl start nextcloud-inotify.service
+Étape 5: Vérification du fonctionnement
+Vérifiez les logs :
+
+bash
+sudo journalctl -u nextcloud-inotify -f
+Testez en créant un fichier :
+
+bash
+touch /mnt/nextcloud_data/votre_utilisateur/files/test_inotify.txt
+Vérifiez qu'il apparaît immédiatement dans Nextcloud.
+
+Configuration Avancée
+1. Exclusions (optionnel)
+Modifiez le script pour ignorer certains fichiers :
+
+bash
+# Ajoutez cette condition dans la boucle while
+if [[ "$FILE" =~ .*\.(tmp|swp|swx)$ ]]; then
+    continue
+fi
+2. Optimisation pour beaucoup d'utilisateurs
+Pour 1000+ utilisateurs, utilisez ceci dans le service :
+
+[Service]
+Environment="INOTIFY_QUEUE=500"
+Environment="INOTIFY_THREADS=4"
+3. Rotation des logs
+Créez un fichier de configuration pour logrotate :
+
+bash
+sudo nano /etc/logrotate.d/nextcloud-inotify
+Avec ce contenu :
+
+/var/log/nextcloud-inotify.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 640 root adm
+    sharedscripts
+    postrotate
+        systemctl restart nextcloud-inotify >/dev/null 2>&1 || true
+    endscript
+}
+Dépannage
+Si les fichiers ne s'affichent pas :
+
+Vérifiez les permissions : sudo ls -la /mnt/nextcloud_data
+
+Testez manuellement : sudo -u www-data php occ files:scan --all
+
+Si le service ne démarre pas :
+
+Vérifiez les erreurs : sudo systemctl status nextcloud-inotify
+
+Testez le script manuellement : /usr/local/bin/nextcloud_inotify.sh
+
+Pour une charge élevée :
+
+Augmentez les limites inotify :
+
+bash
+echo fs.inotify.max_user_watches=1000000 | sudo tee -a /etc/sysctl.conf
+echo fs.inotify.max_user_instances=500 | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+Solution Alternative Plus Robuste
+Pour les environnements de production critiques, envisagez d'utiliser incron à la place :
+
+bash
+sudo apt install -y incron
+sudo systemctl enable incron
+Configurez pour chaque utilisateur :
+
+bash
+sudo nano /etc/incron.d/nextcloud
+Avec :
+
+/mnt/nextcloud_data/* IN_CREATE,IN_DELETE,IN_MODIFY,IN_MOVED_TO /usr/local/bin/nextcloud_scan.sh $@/$#
+Puis créez le script de scan :
+
+bash
+sudo nano /usr/local/bin/nextcloud_scan.sh
+Ce système est plus évolutif pour un grand nombre d'utilisateurs.
+
+Cette configuration garantira que tous les fichiers, qu'ils soient créés via l'interface Nextcloud ou directement sur le système de fichiers, seront immédiatement indexés et visibles dans Nextcloud.

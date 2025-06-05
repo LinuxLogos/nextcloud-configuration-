@@ -1,0 +1,93 @@
+Lier Alfresco Community Edition version 7.1 à ONLYOFFICE nécessite l'installation et la configuration du connecteur ONLYOFFICE pour Alfresco ainsi que l'installation et la configuration d'ONLYOFFICE Document Server. Voici les étapes détaillées :
+
+Prérequis :
+
+Alfresco Community Edition 7.1 installé et fonctionnel sur votre serveur Windows Server 2019.
+Accès administrateur à Alfresco et au serveur.
+Un serveur dédié ou une instance Docker pour installer ONLYOFFICE Document Server (il peut être sur la même machine que Alfresco pour des tests, mais est recommandé sur une machine séparée pour la production).
+Accès internet pour télécharger les connecteurs et les logiciels si nécessaire.
+Étape 1 : Installer ONLYOFFICE Document Server
+
+Vous avez plusieurs options pour installer ONLYOFFICE Document Server. La méthode recommandée est souvent via Docker pour sa simplicité et son isolation.
+
+Option 1 : Installation via Docker (Recommandée)
+
+Installez Docker sur votre serveur (si ce n'est pas déjà fait). Vous pouvez suivre la documentation officielle de Docker pour Windows Server.
+Ouvrez une invite de commandes PowerShell en tant qu'administrateur.
+Exécutez la commande suivante pour télécharger et lancer ONLYOFFICE Document Server :
+PowerShell
+
+docker run -i -t -d -p 80:80 -p 443:443 --restart=always onlyoffice/documentserver
+-i -t: Interaction et pseudo-TTY.
+-d: Exécuter le conteneur en arrière-plan.
+-p 80:80 -p 443:443: Mapper les ports HTTP (80) et HTTPS (443) du conteneur vers votre hôte. Modifiez si ces ports sont déjà utilisés.
+--restart=always: Redémarrer automatiquement le conteneur en cas d'erreur.
+onlyoffice/documentserver: L'image Docker officielle d'ONLYOFFICE Document Server.
+Vérifiez que le conteneur est en cours d'exécution avec la commande docker ps.
+Accédez à l'adresse IP ou au nom de domaine de votre serveur sur le port que vous avez configuré (par exemple, http://votre_serveur:80/) dans un navigateur pour vérifier que ONLYOFFICE Document Server fonctionne correctement. Vous devriez voir la page de bienvenue d'ONLYOFFICE.
+Option 2 : Installation via Packages (si vous préférez ne pas utiliser Docker)
+
+Consultez la documentation officielle d'ONLYOFFICE pour les instructions d'installation sur Windows Server en utilisant les packages (EXE ou MSI). Cela implique de télécharger et d'exécuter l'installeur.
+Suivez les instructions d'installation fournies par ONLYOFFICE.
+Note importante : Pour une utilisation en production, il est fortement recommandé de configurer ONLYOFFICE Document Server avec un certificat SSL pour une communication sécurisée via HTTPS.
+
+Étape 2 : Télécharger le connecteur ONLYOFFICE pour Alfresco
+
+Rendez-vous sur le GitHub officiel des connecteurs ONLYOFFICE: Recherchez "ONLYOFFICE Alfresco connector" sur GitHub. Vous devriez trouver un dépôt maintenu par ONLYOFFICE.
+Naviguez vers la section des releases (versions).
+Téléchargez la version du connecteur compatible avec Alfresco Community Edition 7.1. Généralement, la dernière version stable devrait fonctionner, mais vérifiez la compatibilité dans la documentation du connecteur si vous avez des doutes. Le fichier téléchargé sera généralement un fichier .jar.
+Étape 3 : Installer le connecteur ONLYOFFICE dans Alfresco
+
+L'installation du connecteur se fait en déployant le fichier .jar dans les répertoires appropriés d'Alfresco.
+
+Localisez les répertoires amps d'Alfresco et Alfresco Share. Ces répertoires se trouvent généralement dans le répertoire d'installation d'Alfresco. Par exemple :
+C:\Program Files\Alfresco\alfresco-community\amps (pour le backend Alfresco)
+C:\Program Files\Alfresco\alfresco-community\share\amps (pour l'interface utilisateur Share)
+Copiez le fichier .jar du connecteur ONLYOFFICE dans les deux répertoires amps :
+Copiez onlyoffice-alfresco.jar (le nom exact peut varier selon la version) dans C:\Program Files\Alfresco\alfresco-community\amps.
+Copiez onlyoffice-alfresco-share.jar (ou un fichier similaire contenant "share") dans C:\Program Files\Alfresco\alfresco-community\share\amps.
+Appliquez les AMPs. Pour cela, vous devez utiliser l'outil apply_amps.bat (ou apply_amps.sh sous Linux) qui se trouve généralement dans le répertoire racine d'Alfresco.
+Ouvrez une invite de commandes en tant qu'administrateur.
+Naviguez vers le répertoire racine d'Alfresco (par exemple, C:\Program Files\Alfresco\alfresco-community).
+Exécutez la commande suivante :
+Extrait de code
+
+java -jar bin\alfresco-mmt\alfresco-mmt*.jar install extension-modules\*.amp tomcat\webapps\alfresco -force
+java -jar bin\alfresco-mmt\alfresco-mmt*.jar install extension-modules\share\*.amp tomcat\webapps\share -force
+(Adaptez les chemins si votre installation est différente).
+Supprimez les répertoires de cache de Tomcat. Naviguez vers le répertoire de déploiement de Tomcat (généralement C:\Program Files\Alfresco\tomcat) et supprimez les contenus des répertoires suivants (s'ils existent) :
+work\Catalina\localhost\alfresco
+work\Catalina\localhost\share
+temp
+webapps\alfresco (supprimez le répertoire alfresco entier)
+webapps\share (supprimez le répertoire share entier)
+Redémarrez le service Alfresco. Vous pouvez le faire via le gestionnaire de services de Windows ("Services"). Recherchez les services Alfresco et redémarrez-les.
+Étape 4 : Configurer le connecteur ONLYOFFICE dans Alfresco Share
+
+Une fois Alfresco redémarré, vous devez configurer le connecteur ONLYOFFICE via l'interface d'administration d'Alfresco Share.
+
+Connectez-vous à Alfresco Share en tant qu'administrateur.
+Naviguez vers la section "Admin Tools" (Outils d'administration). Vous la trouverez généralement dans le menu utilisateur en haut à droite.
+Recherchez la section "ONLYOFFICE" dans les outils d'administration. L'emplacement exact peut varier légèrement en fonction de la version du connecteur, mais elle se trouve souvent dans la section "Integration" ou une section similaire.
+Configurez les paramètres du connecteur :
+Document Server Location (Adresse du serveur de documents) : Entrez l'URL de votre instance ONLYOFFICE Document Server. Si vous avez utilisé Docker sur le même serveur Alfresco avec les ports par défaut, cela pourrait être http://localhost ou l'adresse IP de votre serveur. Si vous avez configuré HTTPS pour ONLYOFFICE, utilisez https://.... Assurez-vous d'inclure le port si ce n'est pas le port HTTP/HTTPS par défaut.
+Secret Key (Clé secrète) (Recommandé pour la sécurité) : Il est fortement recommandé de configurer une clé secrète pour sécuriser la communication entre Alfresco et ONLYOFFICE Document Server.
+Générez une clé secrète forte (une chaîne de caractères aléatoire).
+Entrez cette clé secrète dans la configuration du connecteur Alfresco.
+Configurez également cette même clé secrète dans la configuration d'ONLYOFFICE Document Server. Pour ONLYOFFICE Document Server installé via Docker, vous pouvez définir la variable d'environnement JWT_SECRET lors du lancement du conteneur ou modifier le fichier de configuration interne. Consultez la documentation d'ONLYOFFICE pour plus de détails sur la configuration du JWT.
+Autres paramètres : Vous pouvez configurer d'autres options selon vos besoins, comme les types de fichiers à ouvrir avec ONLYOFFICE, les actions disponibles, etc.
+Enregistrez les configurations.
+Étape 5 : Tester l'intégration
+
+Connectez-vous à Alfresco Share avec un utilisateur ayant les droits d'édition sur des documents.
+Naviguez vers un document Office supporté (par exemple, un fichier .docx, .xlsx, ou .pptx).
+Vous devriez maintenant voir une option "Edit in ONLYOFFICE" dans le menu d'actions du document (par exemple, dans le menu déroulant "More..." ou directement comme une action).
+Cliquez sur "Edit in ONLYOFFICE". Le document devrait s'ouvrir dans l'éditeur ONLYOFFICE en ligne dans une nouvelle fenêtre ou un nouvel onglet de votre navigateur.
+Essayez de modifier le document et enregistrez les modifications. Vérifiez que les modifications sont bien enregistrées dans Alfresco.
+Dépannage :
+
+Vérifiez les logs d'Alfresco et d'ONLYOFFICE Document Server en cas de problèmes de connexion ou de fonctionnement.
+Assurez-vous que les URLs configurées sont correctes et que les serveurs sont accessibles via le réseau.
+Vérifiez la compatibilité des versions d'Alfresco, du connecteur et d'ONLYOFFICE Document Server.
+Si vous utilisez une clé secrète (JWT), assurez-vous qu'elle est configurée correctement et identique des deux côtés.
+En suivant ces étapes, vous devriez pouvoir lier avec succès Alfresco Community Edition version 7.1 à ONLYOFFICE pour la modification collaborative de vos documents. N'hésitez pas à consulter la documentation officielle d'Alfresco et d'ONLYOFFICE pour des informations plus spécifiques et avancées.

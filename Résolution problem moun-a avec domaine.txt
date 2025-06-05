@@ -1,0 +1,90 @@
+Voici un guide complet pour monter votre partage Windows Active Directory sur Ubuntu Server afin de sauvegarder les données Nextcloud :
+
+1. Préparation du serveur Ubuntu
+bash
+sudo apt update
+sudo apt install cifs-utils smbclient
+2. Création du fichier d'identifiants
+bash
+sudo nano /etc/samba/nextcloud_creds
+Contenu :
+
+ini
+username=nextcloud
+password=nextcloud
+domain=rodis-togo.local
+Protection du fichier :
+
+bash
+sudo chmod 600 /etc/samba/nextcloud_creds
+3. Création du point de montage
+bash
+sudo mkdir -p /mnt/nextcloud_data
+sudo chown www-data:www-data /mnt/nextcloud_data
+4. Configuration du montage manuel (test)
+bash
+sudo mount -t cifs //192.168.4.3/Partage/Partage-NextCloud /mnt/nextcloud_data \
+-o credentials=/etc/samba/nextcloud_creds,vers=3.0,uid=33,gid=33,file_mode=0770,dir_mode=0770,sec=ntlmssp
+5. Configuration permanente (/etc/fstab)
+bash
+sudo nano /etc/fstab
+Ajoutez cette ligne :
+
+ini
+//192.168.4.3/Partage/Partage-NextCloud /mnt/nextcloud_data cifs credentials=/etc/samba/nextcloud_creds,vers=3.0,uid=33,gid=33,file_mode=0770,dir_mode=0770,sec=ntlmssp,_netdev 0 0
+6. Application des changements
+bash
+sudo mount -a
+7. Configuration Nextcloud
+Éditez le fichier de configuration :
+
+bash
+sudo nano /var/www/nextcloud/config/config.php
+Modifiez la ligne :
+
+php
+'datadirectory' => '/mnt/nextcloud_data',
+8. Vérifications finales
+bash
+# Vérification du montage
+df -h | grep nextcloud
+
+# Test d'écriture
+sudo -u www-data touch /mnt/nextcloud_data/test_file
+sudo -u www-data rm /mnt/nextcloud_data/test_file
+
+# Redémarrage des services
+sudo systemctl restart apache2
+Configuration côté Windows Server (à vérifier) :
+Permissions du partage :
+
+Clic droit sur le dossier → Propriétés → Partage → Autorisations
+
+Ajouter "rodis-togo\nextcloud" avec "Contrôle total"
+
+Permissions NTFS :
+
+Onglet Sécurité → Modifier → Ajouter "rodis-togo\nextcloud"
+
+Cocher "Contrôle total"
+
+Politiques de domaine (si nécessaire) :
+
+Autoriser "Accès à cet ordinateur depuis le réseau" pour le compte nextcloud
+
+Options de dépannage :
+Si échec de connexion :
+
+bash
+# Test avec smbclient
+smbclient -U rodis-togo.local/nextcloud //192.168.4.3/Partage -W rodis-togo.local
+
+# Debug détaillé
+sudo mount -v -t cifs ...  # Ajoutez vos options ici
+dmesg | tail -20
+Bonnes pratiques :
+Créez un compte de service dédié dans l'AD plutôt qu'un compte utilisateur standard
+
+Utilisez un mot de passe complexe
+
+Vérifiez la synchronisation horaire entre les serveurs (ntpdate)

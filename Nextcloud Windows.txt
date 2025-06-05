@@ -1,0 +1,382 @@
+Absolument ! Mettons en place Nextcloud avec OnlyOffice sur Ubuntu, en utilisant PostgreSQL et en intégrant votre partage Windows.
+
+Avertissement Important sur la Version d'Ubuntu :
+
+Ubuntu 21.xx n'est PAS une version LTS (Long Term Support). Son support a pris fin. Pour un serveur en production (ou même pour un usage stable), il est fortement recommandé d'utiliser une version LTS comme Ubuntu 22.04 LTS ou Ubuntu 24.04 LTS. Ces versions bénéficient de mises à jour de sécurité et de maintenance pendant 5 ans. Les instructions ci-dessous fonctionneront probablement, mais vous vous exposez à des failles de sécurité et à des problèmes de compatibilité futurs. Je vais utiliser les commandes pour une version LTS récente (comme 22.04), elles devraient être similaires.
+Avertissement sur la Version de Nextcloud :
+
+Au moment de la rédaction (Avril 2025), Nextcloud 31 n'est peut-être pas encore la dernière version stable officiellement recommandée pour la production. Vérifiez toujours la page officielle de Nextcloud pour la dernière version stable. J'utiliserai des commandes génériques qui vous permettront de télécharger la dernière version stable disponible au moment de l'installation.
+Adresse IP du Serveur Nextcloud : 192.168.4.11
+Adresse IP du Serveur Windows : 192.168.4.3
+
+Voici les étapes détaillées :
+
+Phase 1 : Préparation du Serveur Ubuntu (192.168.4.11)
+
+Mise à jour du système :
+
+Bash
+
+sudo apt update
+sudo apt upgrade -y
+Explication : Assure que tous les paquets du système sont à jour.
+Installation des outils nécessaires :
+
+Bash
+
+sudo apt install -y wget unzip curl software-properties-common apt-transport-https ca-certificates gnupg lsb-release
+Explication : Installe des utilitaires courants pour le téléchargement, la décompression, et la gestion des dépôts logiciels.
+Installation du Serveur Web Apache :
+
+Bash
+
+sudo apt install -y apache2
+sudo systemctl start apache2
+sudo systemctl enable apache2 # Pour démarrer Apache au boot
+Explication : Installe le serveur web Apache et le configure pour démarrer automatiquement.
+Configuration du Pare-feu (UFW) :
+
+Bash
+
+sudo ufw allow 'Apache Full' # Autorise HTTP (80) et HTTPS (443)
+sudo ufw allow OpenSSH      # Assurez-vous que SSH est autorisé pour ne pas vous bloquer
+sudo ufw enable             # Active le pare-feu (confirmez avec 'y')
+sudo ufw status             # Vérifie les règles
+Explication : Configure le pare-feu pour autoriser le trafic web entrant.
+Installation de PostgreSQL :
+
+Bash
+
+sudo apt install -y postgresql postgresql-contrib
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+Explication : Installe le système de gestion de base de données PostgreSQL.
+Création de l'utilisateur et de la base de données pour Nextcloud :
+
+Bash
+
+sudo -u postgres psql -c "CREATE USER nextclouduser WITH PASSWORD 'votre_mot_de_passe_solide';"
+sudo -u postgres psql -c "CREATE DATABASE nextclouddb OWNER nextclouduser;"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE nextclouddb TO nextclouduser;"
+# Quittez psql si vous y étiez entré : \q
+Explication : Crée un utilisateur (nextclouduser) et une base de données (nextclouddb) dédiés à Nextcloud dans PostgreSQL. Remplacez 'votre_mot_de_passe_solide' par un mot de passe sécurisé et notez-le.
+Installation de PHP et des modules requis :
+
+Nextcloud nécessite une version spécifique de PHP. Vérifiez la documentation Nextcloud pour la version stable actuelle. Pour Nextcloud 28/29/30 (versions probables en Avril 2025), PHP 8.1 ou 8.2 est généralement requis. Ubuntu 22.04 LTS fournit PHP 8.1 par défaut.
+<!-- end list -->
+
+Bash
+
+# Installe PHP 8.1 (ou la version recommandée) et les modules essentiels
+sudo apt install -y php php-cli php-gd php-mbstring php-bcmath php-xml php-zip php-intl php-imagick php-pgsql php-ldap php-apcu php-redis php-gmp php-curl
+Explication : Installe PHP et toutes les extensions nécessaires au bon fonctionnement de Nextcloud (gestion d'images, base de données PostgreSQL, internationalisation, cache mémoire, etc.). php-ldap est inclus si vous prévoyez une authentification LDAP plus tard. php-redis et php-apcu sont pour le cache (fortement recommandé).
+Configuration de PHP (Optionnel mais recommandé) :
+
+Éditez le fichier de configuration PHP pour Apache :
+Bash
+
+sudo nano /etc/php/$(php -r 'echo PHP_VERSION;')/apache2/php.ini
+# Exemple pour PHP 8.1: sudo nano /etc/php/8.1/apache2/php.ini
+Ajustez les valeurs suivantes (décommentez si nécessaire et adaptez selon vos ressources serveur) :
+Ini, TOML
+
+memory_limit = 512M
+upload_max_filesize = 10G  # Ou plus selon vos besoins
+post_max_size = 10G        # Doit être >= upload_max_filesize
+max_execution_time = 360
+date.timezone = Europe/Paris # Mettez votre fuseau horaire
+opcache.enable=1             # Activer Opcache pour de meilleures performances
+opcache.interned_strings_buffer=8
+opcache.max_accelerated_files=10000
+opcache.memory_consumption=128
+opcache.save_comments=1
+opcache.revalidate_freq=1
+Redémarrez Apache pour appliquer les changements PHP :
+Bash
+
+sudo systemctl restart apache2
+Explication : Optimise les paramètres PHP pour Nextcloud, notamment la mémoire allouée, la taille maximale des fichiers téléversés et active le cache Opcache.
+Phase 2 : Installation de Nextcloud
+
+Téléchargement de Nextcloud :
+
+Allez sur la page de téléchargement de Nextcloud pour obtenir le lien de la dernière version stable (.zip ou .tar.bz2).
+Téléchargez-le sur votre serveur (remplacez l'URL par la bonne) :
+Bash
+
+cd /tmp
+wget https://download.nextcloud.com/server/releases/latest.zip # Ou le lien spécifique .zip
+Extraction de Nextcloud :
+
+Bash
+
+sudo unzip latest.zip -d /var/www/
+Explication : Décompresse les fichiers de Nextcloud dans le répertoire web /var/www/. Cela créera un dossier /var/www/nextcloud.
+Création du Répertoire de Données (Optionnel - si vous ne voulez pas le laisser dans /var/www/nextcloud/data)
+
+Par défaut, Nextcloud place les données dans /var/www/nextcloud/data. Pour des raisons de sécurité et de gestion, il est souvent préférable de le placer en dehors du répertoire web.
+<!-- end list -->
+
+Bash
+
+sudo mkdir /var/nc_data
+Explication : Crée un répertoire séparé pour les fichiers utilisateurs. Vous indiquerez ce chemin lors de l'installation web.
+Configuration des Permissions :
+
+Le serveur web (Apache tourne sous l'utilisateur www-data sur Ubuntu) doit pouvoir lire et écrire dans les répertoires de Nextcloud.
+<!-- end list -->
+
+Bash
+
+sudo chown -R www-data:www-data /var/www/nextcloud/
+sudo chmod -R 750 /var/www/nextcloud/ # Droits de base
+
+# Permissions plus spécifiques si vous avez créé /var/nc_data
+sudo mkdir -p /var/nc_data
+sudo chown -R www-data:www-data /var/nc_data
+sudo chmod -R 750 /var/nc_data
+Explication : Attribue la propriété des fichiers Nextcloud et du dossier de données à l'utilisateur www-data.
+Configuration d'Apache pour Nextcloud :
+
+Créez un fichier de configuration VirtualHost pour Nextcloud :
+Bash
+
+sudo nano /etc/apache2/sites-available/nextcloud.conf
+Collez la configuration suivante, en adaptant ServerName si vous avez un nom de domaine (sinon, l'IP suffira pour un accès local) :
+Apache
+
+<VirtualHost *:80>
+      ServerAdmin admin@example.com # Mettez votre email
+DocumentRoot /var/www/nextcloud/
+ServerName 192.168.4.11       # Ou votre nom de domaine ex: cloud.votredomaine.com
+
+    Alias /nextcloud "/var/www/nextcloud/"
+
+    <Directory /var/www/nextcloud/>
+        Options +FollowSymlinks
+        AllowOverride All
+          Require all granted
+
+        <IfModule mod_dav.c>
+            Dav off
+        </IfModule>
+
+        SetEnv HOME /var/www/nextcloud
+        SetEnv HTTP_HOME /var/www/nextcloud
+    </Directory>
+
+    ErrorLog ${APACHE_LOG_DIR}/nextcloud_error.log
+    CustomLog ${APACHE_LOG_DIR}/nextcloud_access.log combined
+</VirtualHost>
+```
+Explication : Définit comment Apache doit servir le site Nextcloud. DocumentRoot pointe vers les fichiers Nextcloud, ServerName est l'adresse utilisée pour accéder au site. AllowOverride All permet aux fichiers .htaccess de Nextcloud de fonctionner.
+Activation du site et des modules Apache requis :
+
+Bash
+
+sudo a2ensite nextcloud.conf       # Active la configuration du site
+sudo a2enmod rewrite                # Module pour les URL propres
+sudo a2enmod headers               # Module pour les en-têtes HTTP (sécurité)
+sudo a2enmod env                   # Module pour les variables d'environnement
+sudo a2enmod dir                   # Module de base
+sudo a2enmod mime                  # Module pour les types de fichiers
+sudo a2enmod ssl                   # Module pour HTTPS (sera utilisé plus tard)
+sudo systemctl restart apache2    # Redémarre Apache pour appliquer
+Explication : Active le fichier de configuration nextcloud.conf et les modules Apache nécessaires au fonctionnement et à la sécurité de Nextcloud.
+Finalisation de l'installation via l'interface Web :
+
+Ouvrez votre navigateur web et allez à l'adresse : http://192.168.4.11 (ou le nom de domaine configuré).
+Vous devriez voir l'assistant d'installation de Nextcloud :
+Créez un compte administrateur : Choisissez un nom d'utilisateur et un mot de passe solide.
+Répertoire des données : Entrez le chemin que vous avez choisi (par défaut /var/www/nextcloud/data ou /var/nc_data si vous l'avez créé).
+Base de données :
+Sélectionnez PostgreSQL.
+Nom de la base de données : nextclouddb
+Utilisateur de la base de données : nextclouduser
+Mot de passe de l'utilisateur : votre_mot_de_passe_solide (celui créé précédemment)
+Hôte de la base de données : localhost (car PostgreSQL est sur le même serveur)
+Cliquez sur "Terminer l'installation". Cela peut prendre quelques minutes.
+Une fois terminé, vous serez connecté à votre interface Nextcloud.
+Phase 3 : Installation de OnlyOffice Document Server
+
+La méthode recommandée et la plus simple pour installer OnlyOffice est d'utiliser Docker.
+
+Installation de Docker et Docker Compose :
+
+Bash
+
+# Désinstaller les anciennes versions s'il y en a
+sudo apt-get remove docker docker-engine docker.io containerd runc
+
+# Installer Docker Engine
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg lsb-release
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# Vérifier l'installation
+sudo docker run hello-world
+
+# (Optionnel) Ajouter votre utilisateur au groupe docker pour éviter 'sudo'
+sudo usermod -aG docker $USER
+# Déconnectez-vous et reconnectez-vous pour que le changement de groupe soit pris en compte
+# newgrp docker # Alternative pour la session actuelle
+```
+
+  * *Explication :* Suit les étapes officielles pour installer la dernière version de Docker Engine et Docker Compose sur Ubuntu.
+
+Lancement du Conteneur OnlyOffice Document Server :
+
+Bash
+
+sudo docker run -i -t -d -p 88:80 --restart=always \
+    -v /app/onlyoffice/DocumentServer/logs:/var/log/onlyoffice \
+    -v /app/onlyoffice/DocumentServer/data:/var/www/onlyoffice/Data \
+    -v /app/onlyoffice/DocumentServer/lib:/var/lib/onlyoffice \
+    -v /app/onlyoffice/DocumentServer/db:/var/lib/postgresql onlyoffice/documentserver
+Explication :
+docker run -i -t -d: Lance un conteneur en mode détaché (arrière-plan).
+-p 88:80: Mappe le port 88 de votre serveur hôte (Nextcloud) au port 80 à l'intérieur du conteneur OnlyOffice. Vous accéderez donc à OnlyOffice via http://192.168.4.11:88. Vous pouvez choisir un autre port hôte si 88 est déjà utilisé.
+--restart=always: Redémarre automatiquement le conteneur si le serveur reboote ou si le conteneur plante.
+-v ... : Monte des volumes pour rendre persistants les logs, les données, les bibliothèques et la base de données interne d'OnlyOffice sur votre serveur hôte (dans /app/onlyoffice/...). Créez ces dossiers si nécessaire (sudo mkdir -p /app/onlyoffice/DocumentServer/{logs,data,lib,db}).
+onlyoffice/documentserver: Nom de l'image Docker officielle.
+Vérification et Pare-feu pour OnlyOffice :
+
+Attendez quelques minutes que le conteneur démarre.
+Ouvrez http://192.168.4.11:88 dans votre navigateur. Vous devriez voir une page indiquant "Document Server is running".
+Si vous avez UFW activé, autorisez le port que vous avez choisi (88 dans cet exemple) :
+Bash
+
+sudo ufw allow 88/tcp
+sudo ufw reload
+Phase 4 : Intégration de OnlyOffice et du Partage Windows dans Nextcloud
+
+Installation du Connecteur OnlyOffice dans Nextcloud :
+
+Connectez-vous à Nextcloud en tant qu'administrateur.
+Cliquez sur votre icône de profil en haut à droite -> Applications.
+Cherchez "ONLYOFFICE" dans la catégorie "Bureautique & Texte".
+Cliquez sur "Télécharger et activer".
+Configuration du Connecteur OnlyOffice :
+
+Cliquez sur votre icône de profil -> Administration -> ONLYOFFICE (dans la section Administration à gauche).
+Dans "Adresse du service d'édition de documents" (Document Editing Service address), entrez l'adresse accessible depuis le serveur Nextcloud lui-même pour joindre le conteneur OnlyOffice. Comme Docker tourne sur la même machine, ce sera : http://127.0.0.1:88
+Important : Si vos clients (navigateurs) ne peuvent pas résoudre/accéder directement à 127.0.0.1, vous devrez peut-être utiliser l'IP publique/interne du serveur Nextcloud, soit http://192.168.4.11:88. Testez les deux si l'une ne fonctionne pas. N'UTILISEZ PAS l'adresse publique du conteneur Docker directement ici.
+Laissez le champ "Secret key" vide pour l'instant, sauf si vous configurez un JWT Secret dans le conteneur Docker (plus avancé).
+Cliquez sur "Enregistrer". Il devrait indiquer que les paramètres ont été enregistrés avec succès. Testez en créant/ouvrant un document .docx.
+Installation de l'application "External Storage Support" :
+
+Dans Nextcloud -> Applications.
+Cherchez "External storage support". Elle est généralement activée par défaut, sinon activez-la.
+Configuration du Partage Windows (SMB/CIFS) :
+
+Installez le client SMB sur le serveur Nextcloud :
+Bash
+
+sudo apt update
+sudo apt install -y smbclient php-smbclient
+sudo systemctl restart apache2 # Redémarrez Apache pour que PHP prenne en compte php-smbclient
+Dans Nextcloud, allez dans Administration -> Stockage externe.
+Configurez un nouveau montage :
+Nom du dossier : Choisissez un nom visible par les utilisateurs dans Nextcloud (ex: Documents_Partages).
+Stockage externe : Sélectionnez SMB / CIFS.
+Authentification : Choisissez Nom d'utilisateur et mot de passe.
+Configuration :
+Hôte : 192.168.4.3 (IP de votre serveur Windows).
+Partage : Le nom du partage sur le serveur Windows (ex: Utilisateurs ou Data).
+Dossier distant : Laissez vide pour accéder à la racine du partage, ou spécifiez un sous-dossier (ex: /).
+Domaine : Le domaine Windows si nécessaire (souvent facultatif, sinon le nom du WORKGROUP ou du domaine AD).
+Identifiants :
+Utilisateur : Un nom d'utilisateur Windows ayant les permissions de lire/écrire sur le partage 192.168.4.3. Créez un compte dédié sur Windows Server pour cela si possible.
+Mot de passe : Le mot de passe de cet utilisateur Windows.
+Disponible pour : Sélectionnez les groupes ou utilisateurs Nextcloud qui auront accès à ce partage.
+Options avancées (icône engrenage) : Cochez Activer l'aperçu si désiré. Vous pouvez aussi cocher Vérifier les changements : Toujours (Lent) si vous voulez une détection plus fréquente, mais cela impacte les performances. La méthode standard est via les tâches de fond (cron).
+Cliquez sur la coche (✔) pour enregistrer et tester la connexion. Une coche verte indique que la connexion a réussi.
+Phase 5 : Configuration de "l'Indexation" (Tâches de Fond Cron)
+
+Explication Importante sur inotify : L'outil inotify-tools surveille les événements du système de fichiers local (sur le serveur Linux où il tourne). Il ne peut pas surveiller nativement et efficacement les événements sur un partage réseau distant (SMB/CIFS) hébergé sur un serveur Windows. Tenter de le faire en montant le partage localement puis en surveillant le point de montage est très peu fiable, source d'erreurs et n'est pas recommandé pour synchroniser Nextcloud.
+La méthode Nextcloud Standard : Nextcloud utilise des tâches d'arrière-plan (Background Jobs) pour scanner périodiquement les stockages (y compris externes) et mettre à jour son index. La méthode recommandée est d'utiliser le cron du système.
+<!-- end list -->
+
+Configurer Nextcloud pour utiliser cron :
+
+Dans Nextcloud, allez dans Administration -> Paramètres de base.
+Sous "Tâches de fond" (Background jobs), sélectionnez l'option Cron.
+Configurer la tâche cron système :
+
+Ouvrez l'éditeur de crontab pour l'utilisateur www-data :
+Bash
+
+sudo crontab -u www-data -e
+# Choisissez un éditeur si demandé (nano est simple)
+Ajoutez la ligne suivante à la fin du fichier :
+Extrait de code
+
+*/5 * * * * php -f /var/www/nextcloud/cron.php
+Explication : Cette ligne exécute le script cron.php de Nextcloud toutes les 5 minutes (*/5) en utilisant l'interpréteur PHP. Ce script effectue toutes les tâches de fond nécessaires, y compris la vérification des changements sur les stockages externes.
+Enregistrez et fermez le fichier (Ctrl+X, puis Y, puis Entrée avec nano).
+<!-- end list -->
+
+Comment ça marche : Toutes les 5 minutes, Nextcloud va vérifier (entre autres tâches) s'il y a des modifications sur le partage Windows configuré via "External Storage". Les nouveaux fichiers ou les fichiers modifiés apparaîtront alors dans l'interface Nextcloud. Ce n'est pas instantané comme inotify le serait localement, mais c'est la méthode robuste et supportée pour les partages réseau. La fréquence (*/5) peut être ajustée si besoin (ex: */15 pour toutes les 15 minutes).
+Phase 6 : Sécurité et Finalisation
+
+HTTPS (SSL/TLS) avec Let's Encrypt (Fortement Recommandé) :
+
+Prérequis : Vous avez besoin d'un nom de domaine public pointant vers l'adresse IP 192.168.4.11 (même si c'est un domaine interne résolu par votre DNS local) et que le port 80 soit accessible depuis l'extérieur (ou depuis le serveur Let's Encrypt) pour la validation. Si vous n'avez qu'une IP interne et pas de domaine, vous ne pouvez pas utiliser Let's Encrypt facilement et devrez vous contenter de HTTP (non sécurisé) ou générer un certificat auto-signé (ce qui provoquera des avertissements de sécurité dans les navigateurs).
+Installation de Certbot :
+Bash
+
+sudo apt install -y certbot python3-certbot-apache
+Obtention du certificat : (Remplacez cloud.votredomaine.com par votre nom de domaine configuré dans Apache et admin@example.com par votre email)
+Bash
+
+sudo certbot --apache -d cloud.votredomaine.com -m admin@example.com --agree-tos --no-eff-email -n --redirect
+--apache : Utilise le plugin Apache pour configurer automatiquement le VirtualHost pour HTTPS.
+-d : Spécifie le domaine.
+-m : Votre email pour les notifications de renouvellement.
+--agree-tos : Accepte les conditions de service.
+--no-eff-email : Ne pas partager l'email avec l'EFF.
+-n : Non interactif.
+--redirect : Configure Apache pour rediriger automatiquement HTTP vers HTTPS.
+Certbot configurera automatiquement Apache pour SSL et mettra en place un renouvellement automatique.
+Configuration OnlyOffice pour HTTPS (si vous activez HTTPS pour Nextcloud) :
+
+Si Nextcloud est en HTTPS, le connecteur OnlyOffice exigera que le serveur de documents soit aussi accessible via HTTPS (ou vous devrez cocher une option pour autoriser les contenus mixtes, ce qui est moins sécurisé). La configuration HTTPS pour le conteneur Docker OnlyOffice est plus complexe et implique généralement l'utilisation d'un reverse proxy (comme Nginx ou Apache) devant le conteneur Docker pour gérer le SSL. C'est une étape avancée.
+Optimisations et Sécurité Nextcloud :
+
+Allez dans Administration -> Vue d'ensemble. Nextcloud effectuera une vérification de sécurité et de configuration et vous donnera des recommandations (configuration du cache mémoire avec Redis, en-têtes HTTP, etc.). Suivez ces recommandations.
+Pour configurer Redis (recommandé pour le cache et le verrouillage de fichiers) :
+Bash
+
+sudo apt install -y redis-server php-redis
+sudo systemctl enable --now redis-server
+sudo nano /var/www/nextcloud/config/config.php
+Ajoutez les lignes suivantes à l'intérieur du tableau $CONFIG:
+PHP
+
+'memcache.local' => '\OC\Memcache\APCu',
+'memcache.distributed' => '\OC\Memcache\Redis',
+'memcache.locking' => '\OC\Memcache\Redis',
+'redis' => [
+     'host' => 'localhost',
+     'port' => 6379,
+     ],
+Redémarrez Apache: sudo systemctl restart apache2
+Sauvegardes :
+
+Crucial : Mettez en place une stratégie de sauvegarde solide !
+Base de données Nextcloud (PostgreSQL) : Utilisez pg_dump.
+Bash
+
+sudo -u postgres pg_dump nextclouddb > /chemin/vers/vos/sauvegardes/nextclouddb-$(date +%Y%m%d).sql
+Fichiers de configuration Nextcloud : /var/www/nextcloud/config/config.php
+Applications installées : /var/www/nextcloud/apps/ (ou la liste si vous préférez réinstaller)
+Données Nextcloud locales (si /var/nc_data est utilisé) : Le contenu de /var/nc_data.
+Données sur le serveur Windows : Assurez-vous que le serveur 192.168.4.3 est lui-même sauvegardé correctement ! La sauvegarde de Nextcloud ne sauvegarde pas les données sur le partage externe.
+Configuration OnlyOffice (Volumes Docker) : Sauvegardez les dossiers que vous avez montés (/app/onlyoffice/DocumentServer/*).
+Vous devriez maintenant avoir un serveur Nextcloud fonctionnel avec édition de documents OnlyOffice, utilisant PostgreSQL, et accédant aux fichiers stockés sur votre serveur Windows via le mécanisme de stockage externe et de tâches cron pour la synchronisation de l'index. N'oubliez pas de remplacer les mots de passe et chemins d'exemple par les vôtres.

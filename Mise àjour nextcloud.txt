@@ -1,0 +1,109 @@
+Voici une procédure détaillée pour mettre à jour Nextcloud sans modifier les données utilisateurs ni les configurations, en tenant compte de votre architecture :
+
+📝 Prérequis
+Nextcloud installé : Chemin local /var/www/nextcloud/ (à adapter si différent).
+
+Données utilisateurs : Stockées sur le Windows Server (\\192.168.4.3\Partage\Partage-Nextcloud monté en /mnt/nextcloud_data).
+
+Adresse IP du serveur Nextcloud : 192.168.1.15.
+
+Sauvegarde : Vérifiez que /mnt/nextcloud_data est accessible et contient bien les données.
+
+🔄 Étapes de mise à jour
+1. Préparation
+Activer le mode maintenance :
+
+bash
+sudo -u www-data php /var/www/nextcloud/occ maintenance:mode --on
+Vérifier la version actuelle :
+
+bash
+sudo -u www-data php /var/www/nextcloud/occ status
+Sauvegarder la config (au cas où) :
+
+bash
+cp /var/www/nextcloud/config/config.php /var/www/nextcloud/config/config.php.bak
+2. Téléchargement de la nouvelle version
+Télécharger la dernière version (ex. 31.0.5) :
+
+bash
+wget https://download.nextcloud.com/server/releases/nextcloud-31.0.5.zip -P /tmp/
+unzip /tmp/nextcloud-31.0.5.zip -d /tmp/
+Arrêter le serveur web :
+
+bash
+sudo systemctl stop apache2  # ou `nginx`
+3. Mise à jour propre
+Copier les nouveaux fichiers (sans écraser data/ et config/) :
+
+bash
+rsync -a --delete --exclude=/data/ --exclude=/config/ --exclude=/themes/ /tmp/nextcloud/ /var/www/nextcloud/
+--exclude garantit que données, configs et thèmes personnalisés ne sont pas modifiés.
+
+Restaurer les permissions :
+
+bash
+chown -R www-data:www-data /var/www/nextcloud/
+chmod -R 750 /var/www/nextcloud/
+4. Reconfiguration des données externes
+Vérifier le montage du partage Windows :
+
+bash
+mount | grep /mnt/nextcloud_data
+Si non monté, remonter avec :
+
+bash
+sudo mount -t cifs -o username=user,password=pass //192.168.4.3/Partage/Partage-Nextcloud /mnt/nextcloud_data
+Lier le dossier de données (si configuré dans config.php) :
+Vérifiez que datadirectory pointe bien vers /mnt/nextcloud_data dans /var/www/nextcloud/config/config.php :
+
+php
+'datadirectory' => '/mnt/nextcloud_data',
+5. Post-mise à jour
+Redémarrer le serveur web :
+
+bash
+sudo systemctl start apache2
+Désactiver le mode maintenance :
+
+bash
+sudo -u www-data php /var/www/nextcloud/occ maintenance:mode --off
+Lancer la mise à jour de la base de données :
+
+bash
+sudo -u www-data php /var/www/nextcloud/occ upgrade
+Scanner les fichiers :
+
+bash
+sudo -u www-data php /var/www/nextcloud/occ files:scan --all
+6. Vérifications finales
+Vérifier l’état :
+
+bash
+sudo -u www-data php /var/www/nextcloud/occ status
+Contrôler les logs :
+
+bash
+tail -f /var/www/nextcloud/data/nextcloud.log
+Accès via l'interface web :
+Ouvrez http://192.168.1.15/nextcloud et vérifiez que tout fonctionne.
+
+🔧 Gestion des erreurs courantes
+Problème de permissions :
+
+bash
+chown -R www-data:www-data /var/www/nextcloud/
+Fichiers manquants : Relancer occ upgrade ou vérifier les logs.
+
+Connexion au partage Windows :
+Vérifiez que le partage est accessible en lecture/écriture par l’utilisateur www-data.
+
+📌 Notes importantes
+Apps tierces : Désactivez-les avant la mise à jour (occ app:list + occ app:disable NOM_APP).
+
+Sauvegarde supplémentaire : Si possible, sauvegardez aussi la base de données MySQL/MariaDB.
+
+Test : Si possible, testez la procédure dans un environnement de staging avant la prod.
+
+Cette méthode préserve 100% des données et configurations tout en mettant à jour le cœur de Nextcloud.
+

@@ -1,0 +1,938 @@
+Voici la procédure complète pour déployer Nextcloud 31.0.0 sur Ubuntu 22.04 avec PostgreSQL, tout en stockant les données utilisateurs sur un serveur Windows distant :
+
+Étape 1: Préparation du serveur Windows (172.16.126.9)
+Créer le partage SMB :
+
+Sur le serveur Windows, créez un dossier Nextcloud_Data
+
+Clic droit → Propriétés → Partage → Partage avancé :
+
+Nom du partage : Nextcloud_Data
+
+Permissions : Accès complet pour l'utilisateur nextcloud_user
+
+Configurer le pare-feu :
+
+powershell
+Copy
+New-NetFirewallRule -DisplayName "SMB_Nextcloud" -Protocol TCP -LocalPort 445 -Action Allow
+Étape 2: Installation PostgreSQL sur Ubuntu (172.16.127.25)
+Installer PostgreSQL :
+
+bash
+Copy
+sudo apt clean
+sudo apt update
+sudo dpkg --configure -a
+sudo apt install -f
+sudo apt full-upgrade
+sudo apt autoremove --purge
+sudo apt update
+sudo apt install -y postgresql postgresql-contrib
+Configurer la base de données :
+
+bash
+Copy
+sudo -u postgres psql -c "CREATE USER nextcloud_admin WITH PASSWORD 'votre_motdepasse_securise';"
+sudo -u postgres psql -c "CREATE DATABASE nextcloud_db WITH OWNER nextcloud_admin ENCODING 'UTF8' TEMPLATE template0;"
+ALTER USER nom_utilisateur WITH SUPERUSER;
+
+Optimisation base de donnée
+
+Voici une configuration optimisée pour PostgreSQL 17 adaptée à votre cas d'usage (250 utilisateurs et ~50 000 fichiers) sur un serveur Nextcloud Hub 31 sous Ubuntu 24.04 LTS :
+
+Configuration PostgreSQL 17 optimale (postgresql.conf)
+ini
+#------------------------------------------------------------------------------
+# RESOURCE USAGE (except WAL)
+#------------------------------------------------------------------------------
+
+# - Memory -
+shared_buffers = 8GB                    # 25% de RAM (32GB recommandée)
+work_mem = 32MB                         # 64MB si requêtes complexes
+maintenance_work_mem = 2GB              # Pour VACUUM, CREATE INDEX, etc.
+effective_cache_size = 24GB             # 75% de RAM disponible
+temp_buffers = 64MB                     # Augmenté pour les opérations temporaires
+
+# - Kernel Resource Usage -
+max_connections = 300                   # Marge pour pics de connexion
+superuser_reserved_connections = 10     # Réservé pour admin
+
+# - Cost-Based Vacuum Delay -
+vacuum_cost_limit = 2000                # Augmenté pour moins de contention
+vacuum_cost_delay = 5ms                 # Réduit pour maintenance plus agressive
+
+# - Background Writer -
+bgwriter_delay = 200ms                  # Écriture plus fréquente
+bgwriter_lru_maxpages = 400             # Plus de pages écrites en une fois
+bgwriter_lru_multiplier = 4.0           # Plus agressif
+
+# - Asynchronous Behavior -
+effective_io_concurrency = 200          # Pour SSD/NVMe
+max_worker_processes = 8                # Augmenté pour parallélisme
+max_parallel_workers_per_gather = 4     # Optimisé pour Nextcloud
+random_page_cost = 1.1                  # Pour SSD
+parallel_leader_participation = off     # Meilleures perfs parallèles
+
+# - Write-Ahead Log -
+wal_level = replica                     # Pour sauvegardes à chaud
+synchronous_commit = off                # Meilleures perfs (risque minime)
+wal_buffers = 16MB                      # Augmenté pour grosse charge
+checkpoint_timeout = 15min              # Réduit la fréquence des checkpoints
+max_wal_size = 8GB                      # Taille maximale des WAL
+min_wal_size = 2GB                      # Taille minimale des WAL
+
+# - Query Tuning -
+enable_bitmapscan = on
+enable_hashagg = on
+enable_hashjoin = on
+enable_indexscan = on
+enable_material = on
+enable_mergejoin = on
+enable_nestloop = on
+enable_parallel_append = on
+enable_partition_pruning = on
+enable_seqscan = on                      # Garder pour petites tables
+enable_sort = on
+enable_tidscan = on
+
+# - Autovacuum -
+autovacuum = on
+autovacuum_max_workers = 6              # Augmenté pour maintenance
+autovacuum_naptime = 30s                # Plus fréquent
+autovacuum_vacuum_threshold = 50
+autovacuum_analyze_threshold = 50
+autovacuum_vacuum_scale_factor = 0.1    # Plus sensible
+autovacuum_analyze_scale_factor = 0.05
+Commandes post-configuration :
+bash
+# Appliquer les changements
+sudo systemctl restart postgresql@17-main
+
+# Créer les extensions utiles
+sudo -u postgres psql -d nextcloud_db -c "CREATE EXTENSION pg_stat_statements;"
+sudo -u postgres psql -d nextcloud_db -c "CREATE EXTENSION pg_prewarm;"
+
+# Optimiser les tables existantes
+sudo -u postgres psql -d nextcloud_db -c "VACUUM ANALYZE;"
+Surveillance recommandée :
+Outils intégrés :
+
+bash
+# Statistiques en temps réel
+sudo -u postgres pg_activity -U postgres
+
+# Analyse des requêtes lentes
+sudo -u postgres psql -c "SELECT * FROM pg_stat_statements ORDER BY total_time DESC LIMIT 20;"
+Alertes à configurer :
+
+Espace disque WAL > 75%
+
+Taux de cache hit ratio < 95%
+
+Nombre de connexions > 250
+
+Cette configuration offre un équilibre idéal entre performance et stabilité pour votre charge de travail. Ajustez shared_buffers et work_mem en fonction de votre RAM disponible (ces valeurs supposent 32GB de RAM).
+
+Commandes d'optimisation :
+
+bash
+sudo -u postgres psql -c "ALTER SYSTEM SET pg_prewarm.autoprewarm = on;"
+sudo -u postgres psql -d nextcloud_db -c "CREATE EXTENSION pg_stat_statements;"
+2. Configuration Nextcloud
+Fichier config.php :
+
+php
+'filelocking.enabled' => true,
+'memcache.local' => '\OC\Memcache\Redis',
+'memcache.distributed' => '\OC\Memcache\Redis',
+'memcache.locking' => '\OC\Memcache\Redis',
+'redis' => [
+    'host' => 'localhost',
+    'port' => 6379,
+],
+'preview_max_x' => 2048,
+'preview_max_y' => 2048,
+'preview_max_filesize_image' => 50,
+3. Optimisation des Caches
+Installation Redis :
+
+bash
+sudo apt install redis-server php8.3-redis
+sudo systemctl enable --now redis-server
+Configuration PHP 8.3 (/etc/php/8.3/fpm/php.ini) :
+
+ini
+opcache.enable=1
+opcache.memory_consumption=512
+opcache.interned_strings_buffer=32
+opcache.max_accelerated_files=20000
+apc.enabled=1
+apc.shm_size=256M
+4. Planification des Tâches
+Cron système :
+
+bash
+*/5 * * * * php /var/www/nextcloud/occ system:cron
+*/15 * * * * php /var/www/nextcloud/occ preview:pre-generate
+0 3 * * * php /var/www/nextcloud/occ files:scan --all
+5. Optimisation du Stockage
+Pour 50k fichiers :
+
+bash
+sudo -u www-data php occ config:system:set filesystem_check_changes --value 1 --type integer
+sudo -u www-data php occ db:add-missing-indices
+sudo -u www-data php occ db:convert-filecache-bigint
+6. Monitoring
+Outils recommandés :
+
+bash
+# Installer pgBadger pour l'analyse des logs PostgreSQL
+sudo apt install pgbadger
+sudo chmod 755 /var/log/postgresql/postgresql-17-main.log
+
+# Configuration de base pour Nextcloud
+sudo -u www-data php occ config:system:set loglevel --value=2
+7. Sécurité Renforcée
+Configuration PostgreSQL :
+
+sql
+REVOKE SUPERUSER FROM nextcloud_user;  # Retirer les privilèges superuser
+GRANT CONNECT ON DATABASE nextcloud_db TO nextcloud_user;
+GRANT USAGE ON SCHEMA public TO nextcloud_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO nextcloud_user;
+8. Sauvegarde Automatisée
+Script de sauvegarde :
+
+bash
+#!/bin/bash
+# Sauvegarde PostgreSQL
+sudo -u postgres pg_dump -Fc nextcloud_db > /backups/nextcloud_db_$(date +%Y%m%d).dump
+
+# Sauvegarde des fichiers
+tar -czf /backups/nextcloud_data_$(date +%Y%m%d).tar.gz /mnt/nextcloud_data
+
+# Rotation des sauvegardes (30 jours)
+find /backups/ -type f -mtime +30 -delete
+9. Paramètres Réseau
+Optimisation Apache (/etc/apache2/mods-available/mpm_prefork.conf) :
+
+apache
+<IfModule mpm_prefork_module>
+    StartServers            10
+    MinSpareServers         10
+    MaxSpareServers         20
+    MaxRequestWorkers       150
+    MaxConnectionsPerChild  10000
+</IfModule>
+Ces configurations vous donneront une base solide pour une instance performante. Pensez à :
+
+Monitorer régulièrement avec pg_top ou pg_activity
+
+Tester les performances avec pgbench
+
+Ajuster les paramètres mémoire en fonction de votre charge réelle
+
+Étape 3: Installation Nextcloud
+Installer les dépendances :
+
+bash
+Copy
+sudo apt install -y apache2 php8.1 php8.1-fpm libapache2-mod-php8.1 php8.1-pgsql php8.1-gd php8.1-curl php8.1-mbstring php8.1-intl php8.1-xml php8.1-zip
+Télécharger Nextcloud 31.0.0 :
+
+bashphp8.1
+Copy
+wget https://download.nextcloud.com/server/releases/nextcloud-31.0.0.tar.bz2
+sudo unzip latest-stable.zip -d /var/www/
+sudo tar -xjf nextcloud-31.0.0.tar.bz2 -C /var/www/
+sudo chown -R www-data:www-data /var/www/nextcloud
+
+Étape 4: Configuration Apache
+Créer le fichier de configuration :
+
+bash
+Copy
+sudo nano /etc/apache2/sites-available/nextcloud.conf
+Contenu :
+
+apache
+Copy
+<VirtualHost *:80>
+    ServerName 172.16.127.25
+    DocumentRoot /var/www/nextcloud
+
+    <Directory /var/www/nextcloud>
+        Require all granted
+        AllowOverride All
+        Options FollowSymLinks MultiViews
+    </Directory>
+</VirtualHost>
+Activer le site :
+
+bash
+Copy
+sudo a2ensite nextcloud
+sudo a2enmod rewrite headers env dir mime
+sudo systemctl restart apache2
+Étape 5: Configuration du stockage Windows
+Installer les outils SMB :
+
+bash
+Copy
+sudo apt install -y cifs-utils smbclient
+Créer le point de montage :
+
+bash
+Copy
+sudo mkdir -p /mnt/nextcloud_data
+Configurer le montage automatique :
+
+bash
+Copy
+sudo nano /etc/fstab
+Ajouter :
+
+bash
+Copy
+//172.16.126.9/Nextcloud_Data /mnt/nextcloud_data cifs credentials=/etc/samba/nextcloud_creds,uid=www-data,gid=www-data,file_mode=0770,dir_mode=0770,vers=3.0 0 0
+Créer le fichier d'identifiants :
+
+bash
+Copy
+sudo nano /etc/samba/nextcloud_creds
+Contenu :
+
+ini
+Copy
+username=votre_utilisateur_windows  # Compte Windows avec droits sur le partage
+password=MotDePasseWindows         # Mot de passe du compte Windows
+domain=WORKGROUP                   # Ou le nom de domaine Active Directory si applicable
+Puis :
+
+bash
+Copy
+sudo chmod 600 /etc/samba/nextcloud_creds
+sudo mount -a
+Étape 6: Installation via l'interface web
+Accédez à http://172.16.127.25
+
+Remplissez les champs :
+
+Utilisateur admin et mot de passe
+
+Stockage des données : /mnt/nextcloud_data
+
+Configuration PostgreSQL :
+
+Utilisateur : nextcloud_admin
+
+Mot de passe : votre_motdepasse_securise
+
+Base de données : nextcloud_db
+
+Hôte : localhost
+
+Étape 7: Configuration finale
+Modifier config.php :
+
+bash
+Copy
+sudo nano /var/www/nextcloud/config/config.php
+Ajoutez :
+
+php
+Copy
+<?php
+$CONFIG = array (
+  'datadirectory' => '/mnt/nextcloud_data',
+  'trusted_domains' => [
+    0 => '172.16.127.27',
+  ],
+  // Autres configurations...
+);
+
+Activer nextcloud
+bash
+copy
+
+cd /var/www/nextcloud/
+sudo -u www-data php occ maintenance:install \
+  --data-dir="/mnt/nextcloud_data" \
+  --database="pgsql" \
+  --database-name="nextcloud_db" \
+  --database-user="nextcloud_user" \
+  --database-pass="nextcloud%123%" \
+  --database-host="172.16.127.21" \
+  --admin-user="admin" \
+  --admin-pass="nextcloud%123%"
+
+Configurer le cron :
+
+bash
+Copy
+sudo -u www-data php /var/www/nextcloud/occ config:system
+Vérifications
+Testez l'accès aux fichiers :
+
+bash
+Copy
+sudo -u www-data touch /mnt/nextcloud_data/test_file
+Vérifiez les logs :
+
+bash
+Copy
+tail -f /var/www/nextcloud/data/nextcloud.log
+Cette configuration assure :
+
+Nextcloud fonctionnant sur Ubuntu 22.04
+
+PostgreSQL comme base de données
+
+Tous les fichiers utilisateurs stockés sur le Windows Server
+
+Une connexion sécurisée en SMBv3
+
+Erreur
+Votre répertoire de données est lisible par d'autres personnes.
+
+Veuillez changer les permissions du répertoire en mode 0770 afin que son contenu ne puisse pas être listé par les autres personnes.
+Voici comment corriger ce problème de permissions de manière sécurisée :
+
+Solution pour sécuriser le répertoire de données
+Sur le serveur Ubuntu (172.16.127.25) :
+
+bash
+Copy
+# Appliquer les permissions sécurisées
+sudo chmod -R 0770 /mnt/nextcloud_data
+sudo chown -R www-data:www-data /mnt/nextcloud_data
+
+# Vérifier les ACL (si utilisées)
+sudo setfacl -R -m u:www-data:rwx /mnt/nextcloud_data
+sudo setfacl -R -m g:www-data:rwx /mnt/nextcloud_data
+sudo setfacl -R -m o::--- /mnt/nextcloud_data
+Modifier le montage SMB dans /etc/fstab :
+
+bash
+Copy
+sudo nano /etc/fstab
+Mettre à jour la ligne existante avec :
+
+bash
+Copy
+//172.16.126.9/Nextcloud_Data /mnt/nextcloud_data cifs credentials=/etc/samba/nextcloud_creds,uid=www-data,gid=www-data,file_mode=0770,dir_mode=0770,vers=3.0,noperm 0 0
+Remonter le partage :
+
+bash
+Copy
+sudo umount /mnt/nextcloud_data
+sudo mount -a
+Dans Nextcloud :
+
+bash
+Copy
+sudo -u www-data php occ files:scan --all
+sudo -u www-data php occ maintenance:repair
+Vérifications
+Contrôlez les permissions :
+
+bash
+Copy
+ls -ld /mnt/nextcloud_data
+Doit afficher : drwxrwx---
+
+Testez l'accès :
+
+bash
+Copy
+sudo -u www-data touch /mnt/nextcloud_data/test_permissions
+Solution alternative si problème persiste
+Ajoutez dans config.php :
+
+php
+Copy
+'check_data_directory_permissions' => false,
+'filesystem_check_changes' => 0
+Cette configuration garantit :
+
+Seul l'utilisateur www-data et son groupe ont accès
+
+Les permissions sont persistantes après redémarrage
+
+La sécurité SMB est maintenue en version 3.0
+
+Voici la procédure complète et détaillée pour installer OnlyOffice avec Docker et l'intégrer à Nextcloud :
+
+Étape 1 : Prérequis
+Serveur Ubuntu 22.04 (IP : 172.16.127.25)
+
+Docker et Docker-Compose installés
+
+Nextcloud déjà configuré (IP : 172.16.127.25)
+
+Ports 80, 443 et 8080 ouverts
+
+Étape 2 : Installation de OnlyOffice avec Docker
+A. Créer le dossier de configuration
+bash
+Copy
+sudo mkdir -p /app/onlyoffice/DocumentServer/{logs,data,lib,db}
+sudo chown -R 100:101 /app/onlyoffice/DocumentServer
+B. Lancer le conteneur OnlyOffice
+bash
+Copy
+sudo docker run -d --restart=always --name onlyoffice-ds \
+  -p 172.16.127.25:8080:80 \
+  -p 172.16.127.25:8443:443 \
+  -v /app/onlyoffice/DocumentServer/logs:/var/log/onlyoffice \
+  -v /app/onlyoffice/DocumentServer/data:/var/www/onlyoffice/Data \
+  -v /app/onlyoffice/DocumentServer/lib:/var/lib/onlyoffice \
+  -v /app/onlyoffice/DocumentServer/db:/var/lib/postgresql \
+  -e JWT_SECRET='votre_clé_secrète_jwt' \  # Générée via : openssl rand -hex 32
+  onlyoffice/documentserver:7.3
+C. Vérifier l'installation
+bash
+Copy
+sudo docker ps | grep onlyoffice
+curl http://172.16.127.25:8080/welcome
+→ Doit afficher "Document Server is running"
+
+Étape 3 : Intégration avec Nextcloud
+A. Installer l'application OnlyOffice
+Allez dans Nextcloud → Apps → Office & texte
+
+Cherchez "OnlyOffice" et installez-le
+
+B. Configurer le connecteur
+Paramètres Admin → OnlyOffice
+
+Remplissez :
+f53e22d92901c0f9e36b5265e23823f14ae91f8309b52ac963680646835ca3fb
+
+Adresse ONLYOFFICE Docs : http://172.16.127.25:8080
+
+Clé secrète : votre_clé_secrète_jwt (identique à JWT_SECRET du Docker)
+
+En-tête d'autorisation : AuthorizationJwt
+
+Cochez "Ignorer les erreurs de certificat"
+
+
+Erreur durant la tentative de connexion (cURL error 7: Failed to connect to 172.16.127.25 port 8080 after 0 ms: Connection refused (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for http://172.16.127.25:8080/healthcheck)
+This error indicates that your Nextcloud server cannot connect to the ONLYOFFICE Document Server at 172.16.127.25:8080. Here are the steps to diagnose and fix the issue:
+
+1. Verify the Document Server is Running
+Check if the container is active:
+
+bash
+Copy
+sudo docker ps -a | grep onlyoffice-document-server
+If it's not running, start it:
+
+bash
+Copy
+sudo docker start onlyoffice-document-server
+If it's exited/crashed, check logs:
+
+bash
+Copy
+sudo docker logs onlyoffice-document-server
+2. Check Network Connectivity
+Test if the port is reachable locally (from the Docker host):
+
+bash
+Copy
+curl http://localhost:8080/healthcheck
+If this works, the issue is with the IP binding (172.16.127.25).
+
+If this fails, the Document Server isn’t running properly.
+
+3. Verify IP and Port Binding
+Your docker run command maps ports to 172.16.127.25 (a specific IP). If this IP is incorrect or unavailable, connections will fail.
+
+Option A: Fix the IP Binding
+Ensure 172.16.127.25 is the correct host IP (check with ip a or hostname -I).
+
+If the IP is wrong, recreate the container with the correct IP or use 0.0.0.0:
+
+bash
+Copy
+-p 0.0.0.0:8080:80   # Listen on all host interfaces
+Option B: Use Localhost for Testing
+For testing, try accessing http://localhost:8080 (if Nextcloud is on the same host).
+
+4. Check Firewall Rules
+If the host has a firewall (UFW/iptables), allow traffic on ports 8080 and 8443:
+
+bash
+Copy
+sudo ufw allow 8080/tcp
+sudo ufw allow 8443/tcp
+For iptables:
+
+bash
+Copy
+sudo iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 8443 -j ACCEPT
+5. Verify ONLYOFFICE Health
+Manually check the Document Server’s health endpoint:
+
+bash
+Copy
+curl http://172.16.127.25:8080/healthcheck
+Expected response: "true".
+
+If this fails, the service inside the container may not be running.
+
+6. Recreate the Container
+If all else fails, remove and recreate the container (ensure your data volumes are preserved):
+
+bash
+Copy
+sudo docker stop onlyoffice-document-server
+sudo docker rm onlyoffice-document-server
+sudo docker run -d \
+  --name onlyoffice-document-server \
+  -p 0.0.0.0:8080:80 \
+  -p 0.0.0.0:8443:443 \
+  -e JWT_ENABLED=true \
+  -e JWT_SECRET=beQ0jkDkUwaOzfuF5pKLm7pnIEeTlIhghLDHMqx3LNY= \
+  -e JWT_HEADER=Authorization \
+  -e JWT_IN_BODY=true \
+  -v /var/onlyoffice/logs:/var/log/onlyoffice \
+  -v /var/onlyoffice/data:/var/www/onlyoffice/Data \
+  -v /var/onlyoffice/lib:/var/lib/onlyoffice \
+  -v /var/onlyoffice/db:/var/lib/postgresql \
+  onlyoffice/documentserver
+7. Debugging Nextcloud Integration
+If the Document Server works but Nextcloud still can’t connect:
+
+Check Nextcloud logs:
+
+bash
+Copy
+sudo docker logs nextcloud-server  # If using Docker
+Or:
+
+bash
+Copy
+tail -f /var/www/nextcloud/data/nextcloud.log
+Verify ONLYOFFICE settings in Nextcloud:
+
+Go to Settings > Admin > ONLYOFFICE.
+
+Ensure the address is http://172.16.127.25:8080 (or https://...:8443 if using SSL).
+
+Summary of Key Fixes
+Issue	Solution
+Container not running	sudo docker start onlyoffice-document-server
+Wrong IP binding	Use 0.0.0.0 or correct host IP
+Firewall blocking ports	Allow 8080/tcp and 8443/tcp
+Document Server crashed	Check docker logs and recreate container
+
+Adresse du ONLYOFFICE Docs,Clé secrète (laisser vide pour désactiver),En-tête d'autorisation (laissez vide pour utiliser l'en-tête par défaut),Adresse du ONLYOFFICE Docs pour les demandes internes du serveur,Adresse du serveur pour les demandes internes du ONLYOFFICE Docs
+comment bien remplir ces case dans le cas de mon serveur ?
+Voici comment remplir correctement chaque champ dans la configuration OnlyOffice de votre Nextcloud, spécifiquement adapté à votre environnement (Ubuntu : 172.16.127.25 / Windows : 172.16.126.9) :
+
+Configuration OnlyOffice dans Nextcloud
+(Paramètres Admin → OnlyOffice)
+
+Champ	Valeur à saisir	Explication
+Adresse du ONLYOFFICE Docs	http://172.16.127.25:8080	URL d'accès au serveur OnlyOffice (sur le port Docker)
+Clé secrète	votre_clé_secrète_jwt	Générée avec : openssl rand -hex 32 (doit correspondre à la variable JWT_SECRET du conteneur Docker)
+En-tête d'autorisation	AuthorizationJwt	Laissez cette valeur par défaut
+Adresse pour les demandes internes	http://172.16.127.25:8080	Même URL que ci-dessus (ou localhost:8080 si Docker est sur la même machine)
+Adresse du serveur Nextcloud	http://172.16.127.25	URL de base de votre Nextcloud
+
+
+
+Voici une procédure étape par étape pour synchroniser un dossier Windows (partagé en SMB) avec tous les utilisateurs Nextcloud en utilisant inotify-tools pour une synchronisation en temps réel :
+
+Étape 1 : Prérequis
+✅ Sur le serveur Linux (Nextcloud) :
+
+Accès root ou sudo.
+
+Nextcloud installé (par défaut dans /var/www/nextcloud).
+
+inotify-tools installé (sudo apt install inotify-tools).
+
+Partage SMB Windows monté (ex: /mnt/nextcloud_backup).
+
+✅ Sur Windows :
+
+Un dossier partagé en SMB (ex: \\IP_WINDOWS\backup_nextcloud).
+
+Étape 2 : Monter le Partage SMB sur Linux
+Installer cifs-utils :
+
+bash
+Copy
+sudo apt install cifs-utils -y
+Créer un dossier de montage :
+
+bash
+Copy
+sudo mkdir -p /mnt/nextcloud_backup
+Monter le partage SMB (remplacez USER, PASS, IP_WINDOWS, SHARE_NAME) :
+
+bash
+Copy
+sudo mount -t cifs -o username=USER,password=PASS,vers=3.0 //IP_WINDOWS/SHARE_NAME /mnt/nextcloud_backup
+Rendre le montage permanent (éditez /etc/fstab) :
+
+bash
+Copy
+sudo nano /etc/fstab
+Ajoutez :
+
+Copy
+//IP_WINDOWS/SHARE_NAME /mnt/nextcloud_backup cifs username=USER,password=PASS,vers=3.0,uid=www-data,gid=www-data,file_mode=0770,dir_mode=0770 0 0
+(uid=www-data permet à Nextcloud d’accéder aux fichiers.)
+
+Tester le montage :
+
+bash
+Copy
+sudo mount -a
+ls /mnt/nextcloud_backup  # Doit afficher les fichiers Windows
+
+Étape 3 : Synchroniser vers Tous les Utilisateurs Nextcloud
+Option A : Script pour Tous les Utilisateurs (Boucle sur /var/www/nextcloud/data/)
+Créez un script sync_all_users.sh :
+
+bash
+Copy
+sudo nano /usr/local/bin/sync_all_users.sh
+Collez ce code :
+
+bash
+Copy
+#!/bin/bash
+SMB_SOURCE="/mnt/nextcloud_backup"
+NEXTCLOUD_DATA="/var/www/nextcloud/data"
+
+while true; do
+    inotifywait -r -e modify,create,delete,move "$SMB_SOURCE"
+    for USER_DIR in "$NEXTCLOUD_DATA"/*/files; do
+        rsync -avh --update --delete "$SMB_SOURCE/" "$USER_DIR/"
+        chown -R www-data:www-data "$USER_DIR"
+    done
+    echo "[$(date)] Sync OK for all users." >> /var/log/nextcloud_sync.log
+done
+Explications :
+
+inotifywait surveille les changements dans /mnt/nextcloud_backup.
+
+for USER_DIR boucle sur chaque utilisateur Nextcloud (/data/*/files).
+
+rsync copie les fichiers vers chaque utilisateur.
+
+chown corrige les permissions pour Nextcloud.
+
+Rendez le script exécutable :
+
+bash
+Copy
+
+Option B : Script avec Exclusion des Dossiers Système
+Si Nextcloud a des dossiers système (comme __groupfolders), utilisez :
+
+bash
+Copy
+#!/bin/bash
+SMB_SOURCE="/mnt/nextcloud_backup"
+NEXTCLOUD_DATA="/var/www/nextcloud/data"
+
+while true; do
+    inotifywait -r -e modify,create,delete,move "$SMB_SOURCE"
+    for USER_DIR in "$NEXTCLOUD_DATA"/*/files; do
+        if [[ "$USER_DIR" != *"__groupfolders"* ]]; then  # Exclut les dossiers système
+            rsync -avh --update --delete "$SMB_SOURCE/" "$USER_DIR/"
+            chown -R www-data:www-data "$USER_DIR"
+        fi
+    done
+    echo "[$(date)] Sync OK (excl. system folders)." >> /var/log/nextcloud_sync.log
+done
+Étape 4 : Lancer le Script en Arrière-Plan
+Exécutez-le avec nohup :
+
+bash
+Copy
+sudo chmod +x /usr/local/bin/sync_all_users.sh
+sudo nohup /usr/local/bin/sync_all_users.sh > /dev/null 2>&1 &
+Vérifiez qu’il tourne :
+
+bash
+Copy
+ps aux | grep sync_all_users.sh
+Consultez les logs :
+
+bash
+Copy
+tail -f /var/log/nextcloud_sync.log
+Étape 5 : Automatiser au Démarrage (Systemd)
+Créez un service :
+
+bash
+Copy
+sudo nano /etc/systemd/system/nextcloud-sync-all.service
+Ajoutez cette configuration :
+
+ini
+Copy
+[Unit]
+Description=Nextcloud Sync for All Users
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/sync_all_users.sh
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+Activez et démarrez le service :
+
+bash
+Copy
+sudo systemctl enable nextcloud-sync-all
+sudo systemctl start nextcloud-sync-all
+Vérifiez son statut :
+
+bash
+Copy
+sudo systemctl status nextcloud-sync-all
+
+Accordez les permissions 
+sudo chmod +x /usr/local/bin/sync_all_users.sh
+
+Problèmes Courants & Solutions
+Problème	Solution
+Permission denied sur /mnt/nextcloud_backup	sudo chown -R www-data:www-data /mnt/nextcloud_backup
+Fichiers dupliqués	Utilisez --update avec rsync.
+rsync ne copie pas les nouveaux fichiers	Vérifiez inotifywait avec -e create,modify,move.
+Nextcloud ne voit pas les fichiers	sudo chown -R www-data:www-data /var/www/nextcloud/data/
+Résumé
+✅ Ce que vous avez mis en place :
+
+Montage automatique du partage SMB Windows.
+
+Surveillance en temps réel avec inotify-tools.
+
+Synchronisation vers tous les utilisateurs Nextcloud.
+
+Gestion des permissions (www-data).
+
+Service systemd pour une exécution permanente.
+
+Testez en ajoutant/supprimant un fichier dans le dossier Windows : il doit apparaître/disparaître immédiatement dans Nextcloud pour tous les utilisateurs ! 🚀
+
+
+Cette erreur indique que Nextcloud ne trouve pas le fichier de validation .ncdata dans votre répertoire de données. Voici comment résoudre ce problème :
+
+Solution complète :
+Vérifiez l'existence du fichier .ncdata :
+
+bash
+sudo ls -la /var/www/nextcloud/data/ | grep .ncdata
+Si absent, créez-le :
+
+bash
+sudo -u www-data touch /var/www/nextcloud/data/.ncdata
+sudo -u www-data sh -c 'echo "# Nextcloud data directory" > /var/www/nextcloud/data/.ncdata'
+Vérifiez les permissions :
+
+bash
+sudo chown -R www-data:www-data /var/www/nextcloud/data/
+sudo chmod 750 /var/www/nextcloud/data/
+Corrigez le chemin dans config.php :
+
+bash
+sudo -u www-data nano /var/www/nextcloud/config/config.php
+Vérifiez que la ligne correspond exactement à votre chemin :
+
+php
+'datadirectory' => '/var/www/nextcloud/data',
+Redémarrez les services :
+
+bash
+sudo systemctl restart apache2 php8.3-fpm
+Vérification finale :
+bash
+sudo -u www-data php occ files:scan --all
+sudo -u www-data php occ status
+Cas particuliers :
+Si vous utilisez un stockage externe (NAS, etc.), assurez-vous que :
+
+Le montage est actif (mount | grep /var/www/nextcloud/data)
+
+L'utilisateur www-data a bien accès au point de montage
+
+Cette procédure garantit que Nextcloud pourra valider l'authenticité de votre répertoire de données. Le fichier .ncdata est crucial pour la sécurité - il empêche des attaques par substitution de répertoire.
+
+root@nextcloud-server:/var/www/nextcloud/config# sudo -u www-data touch /mnt/nextcloud_data/test_file
+touch: cannot touch '/mnt/nextcloud_data/test_file': Permission denied
+root@nextcloud-server:/var/www/nextcloud/config#
+Cette erreur de permission indique que l'utilisateur www-data n'a pas les droits nécessaires sur le répertoire /mnt/nextcloud_data. Voici comment résoudre ce problème :
+
+Solution complète :
+Vérifiez le point de montage :
+
+bash
+mount | grep nextcloud_data
+Confirmez que le volume est bien monté et accessible
+
+Corrigez les permissions :
+
+bash
+sudo chown -R www-data:www-data /mnt/nextcloud_data
+sudo chmod -R 770 /mnt/nextcloud_data
+Si c'est un montage NFS/SMB :
+
+bash
+# Pour NFS :
+sudo nano /etc/exports
+# Ajoutez :
+/mnt/nextcloud_data *(rw,sync,no_root_squash,anonuid=33,anongid=33)
+
+# Pour SMB :
+sudo nano /etc/samba/smb.conf
+# Ajoutez :
+[nextcloud]
+  path = /mnt/nextcloud_data
+  valid users = www-data
+  read only = no
+  force user = www-data
+Vérifiez les ACL :
+
+bash
+sudo setfacl -R -m u:www-data:rwx /mnt/nextcloud_data
+Créez le fichier .ncdata :
+
+bash
+sudo -u www-data touch /mnt/nextcloud_data/.ncdata
+sudo -u www-data sh -c 'echo "# Nextcloud data directory" > /mnt/nextcloud_data/.ncdata'
+Mettez à jour config.php :
+
+php
+'datadirectory' => '/mnt/nextcloud_data',
+Redémarrez les services :
+
+bash
+sudo systemctl restart apache2 php8.3-fpm
+Vérification finale :
+bash
+sudo -u www-data ls -la /mnt/nextcloud_data/
+Doit afficher :
+
+drwxrwx---  www-data www-data  .
+-rw-rw----  www-data www-data  .ncdata
+Cas particuliers :
+Pour les disques NTFS : Ajoutez uid=33,gid=33 aux options de montage
+
+Pour les systèmes SELinux :
+
+bash
+sudo chcon -R -t httpd_sys_rw_content_t /mnt/nextcloud_data

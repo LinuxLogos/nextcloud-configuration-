@@ -1,0 +1,211 @@
+ZZroot@ged-server:/home/ged# sudo mount -a
+mount error(13): Permission denied
+Refer to the mount.cifs(8) manual page (e.g. man mount.cifs) and kernel log messages (dmesg)
+mount: (hint) your fstab has been modified, but systemd still uses
+       the old version; use 'systemctl daemon-reload' to reload.
+root@ged-server:/home/ged#
+J'ai pour noyau linux 6.8.0-58-generic x86_64 avec un ubuntu server 24 lts 
+comment corriger cette erreur ? 
+
+Important Consulter le journal pour savoir l'erreur 
+sudo dmesg | tail -30
+
+
+
+ChatGPT a dit :
+L’erreur mount error(13): Permission denied que tu rencontres sous Ubuntu Server 24.04 LTS avec noyau 6.8 indique un problème d’authentification ou d’option incorrecte lors du montage d’un partage Windows via CIFS/SMB.
+
+✅ Étapes pour corriger proprement
+🔹 1. Vérifie les identifiants et le fichier de credentials
+Assure-toi que ton fichier /etc/samba/nextcloud-cred (ou similaire) contient bien :
+
+ini
+Copier
+Modifier
+username=TON_USER_WINDOWS
+password=TON_MOT_DE_PASSE
+domain=TON_DOMAINE (optionnel : retire cette ligne si non applicable)
+Et sécurise-le :
+
+bash
+Copier
+Modifier
+sudo chmod 600 /etc/samba/nextcloud-cred
+🔹 2. Teste manuellement le montage avec les bonnes options CIFS
+Essaie cette commande directement dans le terminal (en adaptant les chemins IP/partage) :
+
+bash
+Copier
+Modifier
+sudo mount -t cifs //192.168.4.3/NextcloudPartage /mnt/nextcloud_data \
+-o credentials=/etc/samba/nextcloud-cred,uid=www-data,gid=www-data,file_mode=0770,dir_mode=0770,vers=3.0,noserverino,nounix,iocharset=utf8
+📌 Important : vers=3.0 est souvent obligatoire avec Windows Server 2016/2019/2022, car SMB1 est désactivé par défaut.
+
+🔹 3. Si l’erreur persiste, vérifie les logs détaillés :
+bash
+Copier
+Modifier
+dmesg | tail -30
+Tu peux y voir :
+
+Authentication failed
+
+Bad credentials
+
+Unable to negotiate SMB version
+
+CIFS: Unknown mount option
+
+🔹 4. Optionnel : recharge le démon systemd (conseil du système)
+bash
+Copier
+Modifier
+sudo systemctl daemon-reexec
+🔹 5. Exemple de ligne correcte pour /etc/fstab
+fstab
+Copier
+Modifier
+//192.168.4.3/NextcloudPartage /mnt/nextcloud_data cifs credentials=/etc/samba/nextcloud-cred,uid=www-data,gid=www-data,file_mode=0770,dir_mode=0770,vers=3.0,noserverino,nounix,iocharset=utf8 0 0
+🎯 Résumé des erreurs classiques à éviter :
+
+Problème courant	Correction
+Mauvais vers	Ajoute vers=3.0 ou vers=2.1
+Mauvais mot de passe ou username	Teste avec smbclient -L //192.168.4.3 -U user
+Mauvais nom de partage	Vérifie sur le serveur Windows
+Partage Windows sans permissions	Donne accès au compte utilisé depuis Windows
+Souhaites-tu que je t’envoie un script complet pour tester et monter automatiquement ton partage, avec vérification des erreurs ?
+
+
+
+
+
+
+
+Vous avez dit :
+ged@ged-server:~$ sudo mount -a
+mount error(13): Permission denied
+Refer to the mount.cifs(8) manual page (e.g. man mount.cifs) and kernel log messages (dmesg)
+ged@ged-server:~$ dmesg | tail -30
+dmesg: read kernel buffer failed: Operation not permitted
+ged@ged-server:~$ sudo dmesg | tail -30
+[   13.689788] vmwgfx 0000:00:0f.0: [drm] DMA map mode: Caching DMA mappings.
+[   13.690529] vmwgfx 0000:00:0f.0: [drm] Legacy memory limits: VRAM = 4096 kB, FIFO = 256 kB, surface = 0 kB
+[   13.690533] vmwgfx 0000:00:0f.0: [drm] MOB limits: max mob size = 1048576 kB, max mob pages = 196608
+[   13.690536] vmwgfx 0000:00:0f.0: [drm] Max GMR ids is 64
+[   13.690538] vmwgfx 0000:00:0f.0: [drm] Max number of GMR pages is 65536
+[   13.690540] vmwgfx 0000:00:0f.0: [drm] Maximum display memory size is 262144 kiB
+[   14.209751] NET: Registered PF_QIPCRTR protocol family
+[   14.331566] vmwgfx 0000:00:0f.0: [drm] Screen Target display unit initialized
+[   14.483443] vmwgfx 0000:00:0f.0: [drm] Fifo max 0x00040000 min 0x00001000 cap 0x0000077f
+[   14.512611] vmwgfx 0000:00:0f.0: [drm] Using command buffers with DMA pool.
+[   14.512857] vmwgfx 0000:00:0f.0: [drm] Available shader model: SM_5.
+[   14.514194] [drm] Initialized vmwgfx 2.20.0 20211206 for 0000:00:0f.0 on minor 0
+[   14.538331] fbcon: vmwgfxdrmfb (fb0) is primary device
+[   14.563832] Console: switching to colour frame buffer device 160x50
+[   14.566488] vmwgfx 0000:00:0f.0: [drm] fb0: vmwgfxdrmfb frame buffer device
+[   15.872411] RAPL PMU: API unit is 2^-32 Joules, 0 fixed counters, 10737418240 ms ovfl timer
+[   17.313938] loop3: detected capacity change from 0 to 8
+[   18.151077] overlayfs: missing 'lowerdir'
+[   24.527519] kauditd_printk_skb: 122 callbacks suppressed
+[   24.527524] audit: type=1400 audit(1746102634.762:134): apparmor="DENIED" operation="ptrace" class="ptrace" profile="snap.docker.dockerd" pid=1297 comm="ps" requested_mask="read" denied_mask="read" peer="rsyslogd"
+[   24.622986] audit: type=1400 audit(1746102634.858:135): apparmor="STATUS" operation="profile_load" profile="snap.docker.dockerd" name="docker-default" pid=1299 comm="apparmor_parser"
+[   24.655162] evm: overlay not supported
+[   24.982890] Initializing XFRM netlink socket
+[   25.126780] systemd-journald[441]: Time jumped backwards, rotating.
+[ 1720.636273] CIFS: enabling forceuid mount option implicitly because uid= option is specified
+[ 1720.636279] CIFS: enabling forcegid mount option implicitly because gid= option is specified
+[ 1720.636282] CIFS: Attempting to mount //172.16.126.9/Ged
+[ 1720.642231] CIFS: Status code returned 0xc000006d STATUS_LOGON_FAILURE
+[ 1720.642246] CIFS: VFS: \\172.16.126.9 Send error in SessSetup = -13
+[ 1720.642292] CIFS: VFS: cifs_mount failed w/return code = -13
+ged@ged-server:~$
+
+
+ChatGPT a dit :
+L’erreur critique que tu rencontres est celle-ci :
+
+STATUS_LOGON_FAILURE
+cifs_mount failed w/return code = -13
+
+🔒 Cela signifie que les identifiants utilisés pour se connecter au partage Windows sont incorrects ou refusés.
+
+✅ Étapes pour corriger STATUS_LOGON_FAILURE
+🔹 1. Vérifie ton fichier d’identifiants CIFS
+Supposons que tu montes ce partage via /etc/fstab avec une ligne comme :
+
+bash
+Copier
+Modifier
+//172.16.126.9/Ged /mnt/ged_data cifs credentials=/etc/samba/ged-cred,uid=www-data,gid=www-data,file_mode=0770,dir_mode=0770,vers=3.0,noserverino,nounix
+Assure-toi que le fichier /etc/samba/ged-cred contient bien :
+
+ini
+Copier
+Modifier
+username=NomUtilisateurValide
+password=MotDePasseCorrect
+domain=TON_DOMAINE (facultatif — retire cette ligne si tu n’as pas de domaine AD)
+⚠️ Attention aux caractères spéciaux dans le mot de passe. Évite les guillemets ou échappe-les avec \.
+
+Puis applique des droits restreints :
+
+bash
+Copier
+Modifier
+sudo chmod 600 /etc/samba/ged-cred
+🔹 2. Teste manuellement la connexion au partage
+Utilise smbclient pour tester les identifiants :
+
+bash
+Copier
+Modifier
+sudo apt install smbclient -y
+
+smbclient //172.16.126.9/Ged -U NomUtilisateurValide
+Tu verras alors :
+
+un prompt te demandant le mot de passe
+
+une connexion réussie ou une erreur explicite
+
+🔹 3. Vérifie les autorisations sur le serveur Windows
+Depuis le serveur Windows (172.16.126.9) :
+
+fais un clic droit sur le dossier Ged
+
+va dans Propriétés > Partage > Autorisations
+
+vérifie que NomUtilisateurValide a les droits Lecture/Écriture
+
+fais de même dans Sécurité (onglet NTFS)
+
+🔹 4. Ajoute ou ajuste l’option vers=3.0
+Certaines versions de Windows refusent les protocoles SMB obsolètes, donc ajoute bien :
+
+bash
+Copier
+Modifier
+vers=3.0
+à la ligne de montage (dans fstab ou manuellement).
+
+🔹 5. Recharge proprement le montage
+Après correction :
+
+bash
+Copier
+Modifier
+sudo umount /mnt/ged_data 2>/dev/null
+sudo mount -a
+✅ Exemple de ligne /etc/fstab corrigée
+fstab
+Copier
+Modifier
+//172.16.126.9/Ged /mnt/ged_data cifs credentials=/etc/samba/ged-cred,uid=www-data,gid=www-data,file_mode=0770,dir_mode=0770,vers=3.0,noserverino,nounix,iocharset=utf8 0 0
+Souhaites-tu que je te prépare un script interactif pour automatiser tout ça (création du répertoire, test des identifiants, création du fichier de credentials, etc.) ?
+
+
+
+
+
+
+

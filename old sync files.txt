@@ -1,0 +1,31 @@
+#!/bin/bash
+
+# Chemin vers le répertoire Nextcloud
+WATCH_DIR="/mnt/nextcloud_data"
+OCC_CMD="/var/www/nextcloud/occ"
+NEXTCLOUD_USER="www-data"
+
+# Fonction pour scanner un fichier/dossier
+scan_path() {
+    local path="$1"
+    sudo -u $NEXTCLOUD_USER php $OCC_CMD files:scan --path="$path" --quiet
+}
+
+# Surveillance en temps réel
+inotifywait -m -r -e create,delete,modify,move --format '%w%f' "$WATCH_DIR" | while read FILE
+do
+    # Récupère le chemin relatif par rapport au dossier Nextcloud
+    REL_PATH=${FILE#$WATCH_DIR}
+    REL_PATH=${REL_PATH#/}
+
+    # Trouve le propriétaire du fichier (premier niveau = nom d'utilisateur)
+    USER_DIR=$(echo "$REL_PATH" | cut -d'/' -f1)
+
+    # Vérifie si c'est un dossier utilisateur valide
+    if [ -d "$WATCH_DIR/$USER_DIR" ] && [ "$USER_DIR" != "" ]; then
+        # Scan seulement le chemin affecté
+        echo "[$(date)] Changement détecté: $REL_PATH"
+        scan_path "$USER_DIR/files/${REL_PATH#$USER_DIR/}"
+    fi
+done
+~

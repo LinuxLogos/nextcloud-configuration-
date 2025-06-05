@@ -1,0 +1,364 @@
+1. Préparation du serveur
+Mise à jour du système
+bash
+Copy
+sudo apt update && sudo apt upgrade -y
+sudo reboot
+Configuration de l'adresse IP statique (172.16.127.20)
+Éditez le fichier Netplan (ex: /etc/netplan/00-installer-config.yaml) :
+
+yaml
+Copy
+network:
+  ethernets:
+    ens160: # Remplacer par le nom de votre interface
+      addresses:
+        - 172.16.127.20/24
+      routes:
+        - to: default
+          via: 172.16.127.1 # Remplacez par votre passerelle
+      nameservers:
+          addresses: [8.8.8.8, 1.1.1.1]
+  version: 2
+Appliquez la configuration :
+
+bash
+Copy
+sudo netplan apply
+2. Installation de PostgreSQL
+bash
+Copy
+sudo apt install postgresql postgresql-contrib -y
+Configuration de la base de données
+bash
+Copy
+sudo -u postgres psql
+Dans l'invite PostgreSQL :
+
+sql
+Copy
+CREATE DATABASE nextcloud_db;
+CREATE USER nextcloud_user WITH PASSWORD 'ChoisirUnMotDePasseFort';
+GRANT ALL PRIVILEGES ON DATABASE nextcloud_db TO nextcloud_user;
+ALTER USER nextcloud_user WITH SUPERUSER;
+
+Optimisation base de donnée 
+
+Voici une configuration optimisée pour PostgreSQL 17 adaptée à votre cas d'usage (250 utilisateurs et ~50 000 fichiers) sur un serveur Nextcloud Hub 31 sous Ubuntu 24.04 LTS :
+
+Configuration PostgreSQL 17 optimale (postgresql.conf)
+ini
+#------------------------------------------------------------------------------
+# RESOURCE USAGE (except WAL)
+#------------------------------------------------------------------------------
+
+# - Memory -
+shared_buffers = 8GB                    # 25% de RAM (32GB recommandée)
+work_mem = 32MB                         # 64MB si requêtes complexes
+maintenance_work_mem = 2GB              # Pour VACUUM, CREATE INDEX, etc.
+effective_cache_size = 24GB             # 75% de RAM disponible
+temp_buffers = 64MB                     # Augmenté pour les opérations temporaires
+
+# - Kernel Resource Usage -
+max_connections = 300                   # Marge pour pics de connexion
+superuser_reserved_connections = 10     # Réservé pour admin
+
+# - Cost-Based Vacuum Delay -
+vacuum_cost_limit = 2000                # Augmenté pour moins de contention
+vacuum_cost_delay = 5ms                 # Réduit pour maintenance plus agressive
+
+# - Background Writer -
+bgwriter_delay = 200ms                  # Écriture plus fréquente
+bgwriter_lru_maxpages = 400             # Plus de pages écrites en une fois
+bgwriter_lru_multiplier = 4.0           # Plus agressif
+
+# - Asynchronous Behavior -
+effective_io_concurrency = 200          # Pour SSD/NVMe
+max_worker_processes = 8                # Augmenté pour parallélisme
+max_parallel_workers_per_gather = 4     # Optimisé pour Nextcloud
+random_page_cost = 1.1                  # Pour SSD
+parallel_leader_participation = off     # Meilleures perfs parallèles
+
+# - Write-Ahead Log -
+wal_level = replica                     # Pour sauvegardes à chaud
+synchronous_commit = off                # Meilleures perfs (risque minime)
+wal_buffers = 16MB                      # Augmenté pour grosse charge
+checkpoint_timeout = 15min              # Réduit la fréquence des checkpoints
+max_wal_size = 8GB                      # Taille maximale des WAL
+min_wal_size = 2GB                      # Taille minimale des WAL
+
+# - Query Tuning -
+enable_bitmapscan = on
+enable_hashagg = on
+enable_hashjoin = on
+enable_indexscan = on
+enable_material = on
+enable_mergejoin = on
+enable_nestloop = on
+enable_parallel_append = on
+enable_partition_pruning = on
+enable_seqscan = on                      # Garder pour petites tables
+enable_sort = on
+enable_tidscan = on
+
+# - Autovacuum -
+autovacuum = on
+autovacuum_max_workers = 6              # Augmenté pour maintenance
+autovacuum_naptime = 30s                # Plus fréquent
+autovacuum_vacuum_threshold = 50
+autovacuum_analyze_threshold = 50
+autovacuum_vacuum_scale_factor = 0.1    # Plus sensible
+autovacuum_analyze_scale_factor = 0.05
+Commandes post-configuration :
+bash
+# Appliquer les changements
+sudo systemctl restart postgresql@17-main
+
+# Créer les extensions utiles
+sudo -u postgres psql -d nextcloud_db -c "CREATE EXTENSION pg_stat_statements;"
+sudo -u postgres psql -d nextcloud_db -c "CREATE EXTENSION pg_prewarm;"
+
+# Optimiser les tables existantes
+sudo -u postgres psql -d nextcloud_db -c "VACUUM ANALYZE;"
+Surveillance recommandée :
+Outils intégrés :
+
+bash
+# Statistiques en temps réel
+sudo -u postgres pg_activity -U postgres
+
+# Analyse des requêtes lentes
+sudo -u postgres psql -c "SELECT * FROM pg_stat_statements ORDER BY total_time DESC LIMIT 20;"
+Alertes à configurer :
+
+Espace disque WAL > 75%
+
+Taux de cache hit ratio < 95%
+
+Nombre de connexions > 250
+
+Cette configuration offre un équilibre idéal entre performance et stabilité pour votre charge de travail. Ajustez shared_buffers et work_mem en fonction de votre RAM disponible (ces valeurs supposent 32GB de RAM).
+
+Commandes d'optimisation :
+
+bash
+sudo -u postgres psql -c "ALTER SYSTEM SET pg_prewarm.autoprewarm = on;"
+sudo -u postgres psql -d nextcloud_db -c "CREATE EXTENSION pg_stat_statements;"
+2. Configuration Nextcloud
+Fichier config.php :
+
+php
+'filelocking.enabled' => true,
+'memcache.local' => '\OC\Memcache\Redis',
+'memcache.distributed' => '\OC\Memcache\Redis',
+'memcache.locking' => '\OC\Memcache\Redis',
+'redis' => [
+    'host' => 'localhost',
+    'port' => 6379,
+],
+'preview_max_x' => 2048,
+'preview_max_y' => 2048,
+'preview_max_filesize_image' => 50,
+3. Optimisation des Caches
+Installation Redis :
+
+bash
+sudo apt install redis-server php8.3-redis
+sudo systemctl enable --now redis-server
+Configuration PHP 8.3 (/etc/php/8.3/fpm/php.ini) :
+
+ini
+opcache.enable=1
+opcache.memory_consumption=512
+opcache.interned_strings_buffer=32
+opcache.max_accelerated_files=20000
+apc.enabled=1
+apc.shm_size=256M
+4. Planification des Tâches
+Cron système :
+
+bash
+*/5 * * * * php /var/www/nextcloud/occ system:cron
+*/15 * * * * php /var/www/nextcloud/occ preview:pre-generate
+0 3 * * * php /var/www/nextcloud/occ files:scan --all
+5. Optimisation du Stockage
+Pour 50k fichiers :
+
+bash
+sudo -u www-data php occ config:system:set filesystem_check_changes --value 1 --type integer
+sudo -u www-data php occ db:add-missing-indices
+sudo -u www-data php occ db:convert-filecache-bigint
+6. Monitoring
+Outils recommandés :
+
+bash
+# Installer pgBadger pour l'analyse des logs PostgreSQL
+sudo apt install pgbadger
+sudo chmod 755 /var/log/postgresql/postgresql-17-main.log
+
+# Configuration de base pour Nextcloud
+sudo -u www-data php occ config:system:set loglevel --value=2
+7. Sécurité Renforcée
+Configuration PostgreSQL :
+
+sql
+REVOKE SUPERUSER FROM nextcloud_user;  # Retirer les privilèges superuser
+GRANT CONNECT ON DATABASE nextcloud_db TO nextcloud_user;
+GRANT USAGE ON SCHEMA public TO nextcloud_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO nextcloud_user;
+8. Sauvegarde Automatisée
+Script de sauvegarde :
+
+bash
+#!/bin/bash
+# Sauvegarde PostgreSQL
+sudo -u postgres pg_dump -Fc nextcloud_db > /backups/nextcloud_db_$(date +%Y%m%d).dump
+
+# Sauvegarde des fichiers
+tar -czf /backups/nextcloud_data_$(date +%Y%m%d).tar.gz /mnt/nextcloud_data
+
+# Rotation des sauvegardes (30 jours)
+find /backups/ -type f -mtime +30 -delete
+9. Paramètres Réseau
+Optimisation Apache (/etc/apache2/mods-available/mpm_prefork.conf) :
+
+apache
+<IfModule mpm_prefork_module>
+    StartServers            10
+    MinSpareServers         10
+    MaxSpareServers         20
+    MaxRequestWorkers       150
+    MaxConnectionsPerChild  10000
+</IfModule>
+Ces configurations vous donneront une base solide pour une instance performante. Pensez à :
+
+Monitorer régulièrement avec pg_top ou pg_activity
+
+Tester les performances avec pgbench
+
+Ajuster les paramètres mémoire en fonction de votre charge réelle
+
+\q
+3. Installation de Nextcloud
+Installation des dépendances
+bash
+Copy
+sudo apt install apache2 php8.1 libapache2-mod-php8.1 php8.1-pgsql php8.1-gd php8.1-curl php8.1-zip php8.1-xml php8.1-mbstring php8.1-bcmath php8.1-intl php8.1-imagick -y
+Téléchargement de Nextcloud
+bash
+Copy
+wget https://download.nextcloud.com/server/releases/latest-stable.zip
+sudo unzip latest-stable.zip -d /var/www/
+sudo chown -R www-data:www-data /var/www/nextcloud
+4. Configuration d'Apache
+Créez un fichier de configuration :
+
+bash
+Copy
+sudo nano /etc/apache2/sites-available/nextcloud.conf
+Contenu :
+
+apache
+Copy
+<VirtualHost 172.16.127.20:80>
+    DocumentRoot /var/www/nextcloud
+    ServerName 172.16.127.20
+
+    <Directory /var/www/nextcloud>
+        Require all granted
+        AllowOverride All
+        Options FollowSymLinks MultiViews
+    </Directory>
+</VirtualHost>
+Activez la configuration :
+
+bash
+Copy
+sudo a2ensite nextcloud.conf
+sudo a2enmod rewrite headers env dir mime
+sudo systemctl reload apache2
+5. Installation de OnlyOffice Document Server
+Installation de Docker
+bash
+Copy
+sudo apt install docker.io -y
+sudo systemctl enable --now docker
+Lancement du conteneur OnlyOffice
+bash
+Copy
+sudo docker run -i -t -d -p 8080:80 --restart=always \
+-v /app/onlyoffice/DocumentServer/logs:/var/log/onlyoffice \
+-v /app/onlyoffice/DocumentServer/data:/var/www/onlyoffice/Data \
+--name onlyoffice-ds onlyoffice/documentserver
+6. Finalisation de l'installation Nextcloud
+Accédez à http://172.16.127.20 dans votre navigateur
+
+Créez un compte admin
+
+Configuration de la base de données :
+
+Type : PostgreSQL
+
+Utilisateur : nextcloud_user
+
+Mot de passe : [Celui défini précédemment]
+
+Base de données : nextcloud_db
+
+Hôte : localhost
+
+7. Intégration d'OnlyOffice
+Dans Nextcloud :
+
+Allez dans "Applications" > Installez "OnlyOffice"
+
+Configurez l'application :
+
+Settings > OnlyOffice > Adresse du Document Editing Service : http://172.16.127.20:8080
+
+8. Configuration Post-Installation
+Ajout de l'IP aux domaines de confiance
+Éditez /var/www/nextcloud/config/config.php :
+
+php
+Copy
+'trusted_domains' => [
+    array (
+        0 => '172.16.127.20',
+    ),
+],
+Optimisation des performances
+bash
+Copy
+sudo apt install php8.1-apcu
+sudo nano /etc/php/8.1/apache2/php.ini
+Modifiez :
+
+Copy
+memory_limit = 512M
+upload_max_filesize = 10G
+post_max_size = 10G
+Redémarrez Apache :
+
+bash
+Copy
+sudo systemctl restart apache2
+9. Vérifications finales
+bash
+Copy
+# Vérification PostgreSQL
+sudo -u postgres psql -c "\l"
+
+# Vérification Docker
+sudo docker ps
+
+# Vérification des logs
+tail -f /var/www/nextcloud/data/nextcloud.log
+Dépannage courant
+Problèmes de permissions : sudo chown -R www-data:www-data /var/www/nextcloud
+
+Erreurs de connexion PostgreSQL : Vérifier pg_hba.conf
+
+OnlyOffice non accessible : Vérifier le firewall (sudo ufw allow 8080)
+
+Ce déploiement fournit une solution complète de GED avec édition collaborative via OnlyOffice, hébergée localement avec PostgreSQL pour une meilleure performance.
